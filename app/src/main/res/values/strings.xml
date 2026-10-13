@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">vplayer</string>
+    <string name="login">Вход</string>
+    <string name="login_hint">Войдите в Яндекс.Музыку</string>
+    <string name="login_step_open">Откройте на телефоне/ПК:</string>
+    <string name="login_step_enter">Введите код:</string>
+    <string name="login_waiting">Ожидание подтверждения…</string>
+    <string name="login_manual_token">Вставить токен вручную (резерв)</string>
+    <string name="login_cancel">Отмена</string>
+    <string name="liked_title">Мне нравится</string>
+    <string name="error_generic">Ошибка: %s</string>
+    <string name="error_no_track">Нет доступного полного потока для трека</string>
+    <string name="play">Играть</string>
+    <string name="pause">Пауза</string>
+    <string name="next">След.</string>
+    <string name="prev">Пред.</string>
+    <string name="empty_list">Список пуст</string>
+    <string name="now_playing">Сейчас играет</string>
+</resources>
