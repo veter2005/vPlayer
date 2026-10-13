@@ -1,0 +1,32 @@
+# Build outputs
+build/
+app/build/
+.gradle/
+**/build/
+*.gradle/
+*.log
+
+# Gradle wrapper (project uses standard Gradle 8.7 + AGP 8.5.2, not wrapper jar)
+# Regenerate locally via `gradle wrapper`
+gradle-wrapper.jar
+gradle/wrapper/
+
+# IDE files
+.idea/
+*.iml
+.vscode/
+.DS_Store
+
+# Keystore (do not commit)
+keystore.jks
+*.keystore
+*.jks
+keystore.properties
+
+# APK outputs
+*.apk
+*.aab
+
+# Local env / secrets
+local.properties
+env.properties
