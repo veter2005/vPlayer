@@ -28,9 +28,13 @@
         </activity>
 
         <service
-            android:name=".player.PlaybackService"
+            android:name=".player.service.PlaybackService"
             android:foregroundServiceType="mediaPlayback"
             android:exported="false"
-            android:stopWithTask="false" />
+            android:stopWithTask="false">
+            <intent-filter>
+                <action android:name="androidx.media3.session.MediaSessionService" />
+            </intent-filter>
+        </service>
     </application>
 </manifest>

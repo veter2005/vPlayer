@@ -4,12 +4,13 @@ import android.util.Log
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.FormBody
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
-import okhttp3.ResponseBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
@@ -24,7 +25,7 @@ object ApiClient {
     private const val CLIENT_SECRET = "53bc75238f0c4d08a118e51fe9203300"
     private const val SIGN_SALT = "XGRlBW9FXlekgbPrRHuSiA"
 
-    private val http = OkHttpClient.Builder()
+    private val http: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
@@ -41,6 +42,14 @@ object ApiClient {
         val interval: Int,
         val expiresIn: Int
     )
+
+    sealed class TokenResult {
+        data class Success(val token: String) : TokenResult()
+        object Pending : TokenResult()
+        object Expired : TokenResult()
+        object Denied : TokenResult()
+        data class Error(val msg: String) : TokenResult()
+    }
 
     fun requestDeviceCode(deviceId: String, deviceName: String, onResult: (DeviceCode?, String?) -> Unit) {
         val body = FormBody.Builder()
@@ -64,14 +73,6 @@ object ApiClient {
         }
     }
 
-    sealed class TokenResult {
-        data class Success(val token: String) : TokenResult()
-        object Pending : TokenResult()
-        object Expired : TokenResult()
-        object Denied : TokenResult()
-        data class Error(val msg: String) : TokenResult()
-    }
-
     fun pollDeviceToken(deviceCode: String, onResult: (TokenResult) -> Unit) {
         val body = FormBody.Builder()
             .add("grant_type", "device_code")
@@ -80,9 +81,7 @@ object ApiClient {
             .add("client_secret", CLIENT_SECRET)
             .build()
         post("$OAUTH_BASE/token", body, null) { resp, err ->
-            // If network failed (no body), surface error
             if (err != null && resp.isEmpty()) return@post onResult(TokenResult.Error(err))
-            // Parse JSON if possible, even if HTTP != 200 (400 with JSON body)
             if (resp.isEmpty()) return@post onResult(TokenResult.Error("empty response"))
             val json = try { JSONObject(resp) } catch (e: Exception) { null }
                 ?: return@post onResult(TokenResult.Error("bad json"))
@@ -114,16 +113,27 @@ object ApiClient {
         }
     }
 
-    // ---------- Liked tracks ----------
+    // ---------- Models ----------
     data class Track(
         val id: String,
         val albumId: String,
         val title: String,
-        val artist: String
+        val artist: String,
+        val durationMs: Long = 0L,
+        val liked: Boolean = false,
+        val available: Boolean = true
     ) {
         val trackId: String get() = if (albumId.isNotEmpty()) "$id:$albumId" else id
     }
 
+    data class Playlist(
+        val kind: String,
+        val title: String,
+        val trackCount: Int,
+        val uid: String
+    )
+
+    // ---------- Liked tracks ----------
     fun likedTracks(uid: String, onResult: (List<Track>?, String?) -> Unit) {
         get("$API_BASE/users/$uid/likes/tracks") { resp, err ->
             if (err != null) return@get onResult(null, err)
@@ -131,14 +141,15 @@ object ApiClient {
             val lib = json.optJSONObject("result")?.optJSONObject("library")
                 ?: return@get onResult(null, "no library")
             val arr = lib.optJSONArray("tracks") ?: JSONArray()
-            // resolve metadata in batches
             val ids = (0 until arr.length()).mapNotNull {
                 val t = arr.optJSONObject(it) ?: return@mapNotNull null
                 Track(
                     id = t.optString("id"),
                     albumId = t.optString("albumId"),
                     title = "",
-                    artist = ""
+                    artist = "",
+                    durationMs = t.optLong("durationMs"),
+                    liked = true
                 )
             }.filter { it.id.isNotEmpty() }
 
@@ -149,6 +160,135 @@ object ApiClient {
         }
     }
 
+    // ---------- Playlists ----------
+    fun playlistsList(uid: String, onResult: (List<Playlist>?, String?) -> Unit) {
+        get("$API_BASE/users/$uid/playlists") { resp, err ->
+            if (err != null) return@get onResult(null, err)
+            val json = JSONObject(resp)
+            val arr = json.optJSONArray("result") ?: JSONArray()
+            val list = (0 until arr.length()).mapNotNull {
+                val p = arr.optJSONObject(it) ?: return@mapNotNull null
+                Playlist(
+                    kind = p.optString("kind"),
+                    title = p.optString("title", "Без названия"),
+                    trackCount = p.optInt("trackCount"),
+                    uid = p.optString("uid")
+                )
+            }
+            onResult(list, null)
+        }
+    }
+
+    fun playlistTracks(uid: String, kind: String, onResult: (List<Track>?, String?) -> Unit) {
+        get("$API_BASE/users/$uid/playlists/$kind") { resp, err ->
+            if (err != null) return@get onResult(null, err)
+            val json = JSONObject(resp)
+            val tracksArr = json.optJSONObject("result")?.optJSONArray("tracks") ?: JSONArray()
+            val ids = (0 until tracksArr.length()).mapNotNull {
+                val t = tracksArr.optJSONObject(it) ?: return@mapNotNull null
+                val trackObj = t.optJSONObject("track") ?: return@mapNotNull null
+                Track(
+                    id = trackObj.optString("id"),
+                    albumId = trackObj.optString("albumId"),
+                    title = "",
+                    artist = "",
+                    durationMs = trackObj.optLong("durationMs"),
+                    liked = trackObj.optBoolean("liked", false)
+                )
+            }.filter { it.id.isNotEmpty() }
+            resolveTrackMetadata(ids) { fullList, mErr ->
+                onResult(fullList, mErr)
+            }
+        }
+    }
+
+    // ---------- Search ----------
+    data class SearchResult(
+        val tracks: List<Track>,
+        val playlists: List<Playlist>
+    )
+
+    fun search(text: String, type: String, onResult: (SearchResult?, String?) -> Unit) {
+        val baseUrl = "$API_BASE/search".toHttpUrlOrNull() ?: return onResult(null, "bad url")
+        val url = baseUrl.newBuilder()
+            ?.addQueryParameter("text", text)
+            ?.addQueryParameter("type", type)
+            ?.addQueryParameter("nocorrect", "false")
+            ?.addQueryParameter("page", "0")
+            ?.addQueryParameter("playlist-in-best", "true")
+            ?.build()
+            ?.toString()
+            ?: return onResult(null, "bad url")
+        get(url) { resp, err ->
+            if (err != null) return@get onResult(null, err)
+            val json = JSONObject(resp)
+            val res = json.optJSONObject("result") ?: return@get onResult(null, "no result")
+            when (type) {
+                "track" -> {
+                    val tracksArr = res.optJSONArray("tracks") ?: JSONArray()
+                    val tracks = (0 until tracksArr.length()).mapNotNull {
+                        val t = tracksArr.optJSONObject(it) ?: return@mapNotNull null
+                        Track(
+                            id = t.optString("id"),
+                            albumId = t.optString("albumId"),
+                            title = "",
+                            artist = "",
+                            durationMs = t.optLong("durationMs")
+                        )
+                    }
+                    resolveTrackMetadata(tracks) { full, mErr ->
+                        onResult(SearchResult(full ?: emptyList(), emptyList()), mErr)
+                    }
+                }
+                "playlist" -> {
+                    val pArr = res.optJSONArray("playlists") ?: JSONArray()
+                    val pl = (0 until pArr.length()).mapNotNull {
+                        val p = pArr.optJSONObject(it) ?: return@mapNotNull null
+                        Playlist(
+                            kind = p.optString("kind"),
+                            title = p.optString("title", "Без названия"),
+                            trackCount = p.optInt("trackCount"),
+                            uid = p.optString("uid")
+                        )
+                    }
+                    onResult(SearchResult(emptyList(), pl), null)
+                }
+                else -> onResult(SearchResult(emptyList(), emptyList()), "unsupported type")
+            }
+        }
+    }
+
+    // ---------- Like / Dislike ----------
+    fun likeTrack(trackId: String, uid: String, onResult: (Boolean, String?) -> Unit) {
+        val body = FormBody.Builder().add("track-ids", trackId).build()
+        post("$API_BASE/users/$uid/likes/tracks/add-multiple", body, null) { resp, err ->
+            if (err != null) return@post onResult(false, err)
+            val json = JSONObject(resp)
+            val result = json.optJSONObject("result")
+            onResult(result?.has("revision") == true, null)
+        }
+    }
+
+    fun unlikeTrack(trackId: String, uid: String, onResult: (Boolean, String?) -> Unit) {
+        val body = FormBody.Builder().add("track-ids", trackId).build()
+        post("$API_BASE/users/$uid/likes/tracks/remove", body, null) { resp, err ->
+            if (err != null) return@post onResult(false, err)
+            val json = JSONObject(resp)
+            val result = json.optJSONObject("result")
+            onResult(result?.has("revision") == true, null)
+        }
+    }
+
+    fun dislikeTrack(trackId: String, uid: String, onResult: (Boolean, String?) -> Unit) {
+        val body = FormBody.Builder().add("track-ids", trackId).build()
+        post("$API_BASE/users/$uid/dislikes/tracks/add-multiple", body, null) { resp, err ->
+            if (err != null) return@post onResult(false, err)
+            val json = JSONObject(resp)
+            onResult(json.has("revision"), null)
+        }
+    }
+
+    // ---------- Metadata batch ----------
     private fun resolveTrackMetadata(ids: List<Track>, onDone: (List<Track>?, String?) -> Unit) {
         val result = ids.toMutableList()
         val batches = ids.chunked(100)
@@ -179,12 +319,14 @@ object ApiClient {
                 val tid = t.optString("id")
                 val title = t.optString("title")
                 val artist = t.optJSONArray("artists")?.optJSONObject(0)?.optString("name") ?: ""
-                map[tid] = Track(tid, "", title, artist)
+                val dur = t.optLong("durationMs")
+                val avail = t.optBoolean("available", true)
+                map[tid] = Track(tid, "", title, artist, dur, available = avail)
             }
             for (i in result.indices) {
                 val cur = result[i]
                 map[cur.id]?.let {
-                    result[i] = Track(cur.id, cur.albumId, it.title, it.artist)
+                    result[i] = Track(cur.id, cur.albumId, it.title, it.artist, it.durationMs, cur.liked, it.available)
                 }
             }
             fetchBatch(idx + 1, batches, result, onDone)
@@ -257,6 +399,7 @@ object ApiClient {
                     val err = when (response.code) {
                         401 -> "unauthorized"
                         403 -> "forbidden"
+                        451 -> "legal unavailable"
                         else -> "http ${response.code}"
                     }
                     onDone(body, err)
@@ -277,7 +420,7 @@ object ApiClient {
         })
     }
 
-    private fun post(url: String, body: okhttp3.RequestBody, auth: String?, onDone: (String, String?) -> Unit) {
+    private fun post(url: String, body: RequestBody, auth: String?, onDone: (String, String?) -> Unit) {
         val rb = Request.Builder().url(url).post(body).apply {
             if (auth != null) header("Authorization", auth)
             else token?.let { header("Authorization", "OAuth $it") }
