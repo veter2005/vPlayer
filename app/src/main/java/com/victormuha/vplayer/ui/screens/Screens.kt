@@ -91,46 +91,75 @@ private fun OfflineBadge() {
     )
 }
 
-/** Download / progress / refresh / delete controls shared by "liked" and playlist pages. */
+/**
+ * Download controls shared by "liked", playlist and downloaded pages.
+ * Pause keeps every downloaded track (and the partial one); delete needs a second tap.
+ */
 internal fun LazyListScope.downloadControls(
-    entry: OfflinePlaylist?, offline: Boolean, onDownload: () -> Unit, onRemove: () -> Unit
+    entry: OfflinePlaylist?, offline: Boolean,
+    onDownload: () -> Unit, onPause: () -> Unit, onRemove: () -> Unit
 ) {
+    val progressText = entry?.let { "${it.done}/${it.total}" } ?: ""
     when (entry?.status) {
         null -> if (!offline) item("download") { MenuButton("⬇ Скачать для оффлайна", onClick = onDownload) }
         SyncStatus.QUEUED, SyncStatus.DOWNLOADING -> {
             item("download-progress") {
-                val total = entry.total.coerceAtLeast(1)
-                Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(
-                        if (entry.status == SyncStatus.QUEUED) "В очереди на загрузку" else "Загрузка ${entry.done}/${entry.total}",
-                        color = Accent, fontSize = 11.sp
-                    )
-                    LinearProgressIndicator(
-                        progress = { entry.done.toFloat() / total },
-                        modifier = Modifier.fillMaxWidth(0.8f).padding(top = 3.dp), color = Accent
-                    )
-                }
+                DownloadProgress(
+                    when {
+                        entry.status == SyncStatus.DOWNLOADING -> "Загрузка $progressText"
+                        offline -> "Ждёт сеть · $progressText"
+                        else -> "В очереди · $progressText"
+                    },
+                    entry.done, entry.total, Accent
+                )
             }
-            item("download-cancel") { MenuButton("Отменить загрузку", onClick = onRemove) }
+            item("download-pause") { MenuButton("Приостановить", "скачанное сохранится", onPause) }
+        }
+        SyncStatus.PAUSED -> {
+            item("download-progress") { DownloadProgress("Пауза · $progressText", entry.done, entry.total, Color.LightGray) }
+            if (!offline) item("download-resume") { MenuButton("▶ Продолжить загрузку", onClick = onDownload) }
+            item("download-remove") { DeleteDownloadButton(entry.done, onRemove) }
         }
         SyncStatus.DONE -> {
             item("download-done") {
-                MenuButton("✓ Скачано ${entry.done}/${entry.total}", if (offline) "" else "Нажмите, чтобы обновить") {
+                MenuButton("✓ Скачано $progressText", if (offline) "" else "Нажмите, чтобы обновить") {
                     if (!offline) onDownload()
                 }
             }
-            item("download-remove") { MenuButton("Удалить загрузку", onClick = onRemove) }
+            item("download-remove") { DeleteDownloadButton(entry.done, onRemove) }
         }
         SyncStatus.PARTIAL, SyncStatus.FAILED, SyncStatus.NO_SPACE -> {
             item("download-warn") {
                 Text(
-                    entry.message ?: "Скачано ${entry.done}/${entry.total}", color = Color(0xFFFF8080),
+                    entry.message ?: "Скачано $progressText", color = Color(0xFFFF8080),
                     fontSize = 11.sp, textAlign = TextAlign.Center
                 )
             }
-            if (!offline) item("download-retry") { MenuButton("Докачать", "${entry.done}/${entry.total}", onDownload) }
-            item("download-remove") { MenuButton("Удалить загрузку", onClick = onRemove) }
+            if (!offline) item("download-retry") { MenuButton("▶ Докачать", progressText, onDownload) }
+            item("download-remove") { DeleteDownloadButton(entry.done, onRemove) }
         }
+    }
+}
+
+@Composable
+private fun DownloadProgress(label: String, done: Int, total: Int, color: Color) {
+    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(label, color = color, fontSize = 11.sp, textAlign = TextAlign.Center)
+        LinearProgressIndicator(
+            progress = { done.toFloat() / total.coerceAtLeast(1) },
+            modifier = Modifier.fillMaxWidth(0.8f).padding(top = 3.dp), color = color
+        )
+    }
+}
+
+@Composable
+private fun DeleteDownloadButton(done: Int, onRemove: () -> Unit) {
+    var confirm by remember { mutableStateOf(false) }
+    MenuButton(
+        if (confirm) "Точно удалить?" else "Удалить загрузку",
+        if (confirm) "$done треков будут удалены" else ""
+    ) {
+        if (confirm) { confirm = false; onRemove() } else confirm = true
     }
 }
 
@@ -216,9 +245,10 @@ fun LikedScreenContent(main: MainViewModel, playback: PlaybackViewModel) {
         { main.loadLikedTracks() }, { main.goBack() },
         header = {
             if (offline) item("offline-badge") { OfflineBadge() }
-            downloadControls(library.playlists[OfflineKeys.LIKED], offline, { main.downloadLiked() }) {
-                main.removeDownload(OfflineKeys.LIKED)
-            }
+            downloadControls(
+                library.playlists[OfflineKeys.LIKED], offline, { main.downloadLiked() },
+                { main.pauseDownload(OfflineKeys.LIKED) }
+            ) { main.removeDownload(OfflineKeys.LIKED) }
         },
         isLocal = { library.tracks[it.id]?.fileName != null }
     ) { index ->
@@ -275,9 +305,10 @@ fun PlaylistDetailScreenContent(main: MainViewModel, playback: PlaybackViewModel
         { main.loadPlaylistTracks(kind, owner) }, { main.goBack() },
         header = {
             if (offline) item("offline-badge") { OfflineBadge() }
-            downloadControls(library.playlists[key], offline, { main.downloadPlaylist(owner, kind, nav.playlistTitle) }) {
-                main.removeDownload(key)
-            }
+            downloadControls(
+                library.playlists[key], offline, { main.downloadPlaylist(owner, kind, nav.playlistTitle) },
+                { main.pauseDownload(key) }
+            ) { main.removeDownload(key) }
         },
         isLocal = { library.tracks[it.id]?.fileName != null }
     ) { index ->
@@ -524,6 +555,7 @@ internal fun DownloadsPage(library: OfflineLibrary, onOpen: (String, String) -> 
                 SyncStatus.DONE -> "✓ ${p.done} треков"
                 SyncStatus.QUEUED -> "в очереди"
                 SyncStatus.DOWNLOADING -> "загрузка ${p.done}/${p.total}"
+                SyncStatus.PAUSED -> "пауза ${p.done}/${p.total}"
                 else -> "${p.done}/${p.total} · не всё"
             }
             MenuButton(p.title, sub) { onOpen(p.key, p.title) }
@@ -546,11 +578,7 @@ fun DownloadDetailScreenContent(main: MainViewModel, playback: PlaybackViewModel
         "${nav.playlistTitle} · ${tracks.size}", tracks, false, null, {}, { main.goBack() },
         header = {
             if (offline) item("offline-badge") { OfflineBadge() }
-            downloadControls(entry, offline, {
-                entry?.let {
-                    if (key == OfflineKeys.LIKED) main.downloadLiked() else main.downloadPlaylist(it.ownerUid, it.kind, it.title)
-                }
-            }) {
+            downloadControls(entry, offline, { main.resumeDownload(key) }, { main.pauseDownload(key) }) {
                 main.removeDownload(key)
                 main.goBack()
             }
@@ -621,7 +649,7 @@ fun SettingsScreenContent(main: MainViewModel, playback: PlaybackViewModel) {
         item { VolumeControl(volume, { playback.setVolume(it) }) }
         item {
             Text(
-                "v0.3.0\n${config.screenWidthDp} × ${config.screenHeightDp} dp\n" +
+                "v0.3.1\n${config.screenWidthDp} × ${config.screenHeightDp} dp\n" +
                     "Плотность ${"%.2f".format(density)}",
                 color = Color.Gray, fontSize = 10.sp, textAlign = TextAlign.Center
             )

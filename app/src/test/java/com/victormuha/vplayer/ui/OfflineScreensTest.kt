@@ -49,7 +49,7 @@ class OfflineScreensTest {
         compose.setContent {
             Viewport {
                 TrackPage("Мне нравится · 12", tracks, false, null, {}, {},
-                    header = { downloadControls(null, false, { started = true }, {}) }) {}
+                    header = { downloadControls(null, false, { started = true }, {}, {}) }) {}
             }
         }
         compose.onNodeWithText("⬇ Скачать для оффлайна").assertIsDisplayed().performClick()
@@ -59,18 +59,19 @@ class OfflineScreensTest {
 
     @Test fun progressAndLocalMarksAreShown() {
         val entry = OfflinePlaylist("liked", "1", "liked", "Мне нравится", tracks.map { it.id }, SyncStatus.DOWNLOADING, 5, 12)
-        var cancelled = false
+        var paused = false
         compose.setContent {
             Viewport {
                 TrackPage("Мне нравится · 12", tracks, false, null, {}, {},
-                    header = { downloadControls(entry, false, {}, { cancelled = true }) },
+                    header = { downloadControls(entry, false, {}, { paused = true }, { error("must not delete") }) },
                     isLocal = { it.id.toInt() <= 5 }) {}
             }
         }
         compose.onNodeWithText("Загрузка 5/12").assertIsDisplayed()
         assertTrue(compose.onAllNodesWithText("✓ Исполнитель", useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty())
-        compose.onNodeWithText("Отменить загрузку").performClick()
-        assertTrue(cancelled)
+        compose.onNodeWithText("Приостановить").assertIsDisplayed().performClick()
+        assertTrue(paused)
+        compose.onNodeWithText("Удалить загрузку").assertDoesNotExist()
         screenshot("liked-progress-466dp")
     }
 
@@ -79,12 +80,34 @@ class OfflineScreensTest {
         compose.setContent {
             Viewport {
                 TrackPage("Мне нравится", tracks, false, null, {}, {},
-                    header = { downloadControls(entry, true, {}, {}) }) {}
+                    header = { downloadControls(entry, true, {}, {}, {}) }) {}
             }
         }
         compose.onNodeWithText("✓ Скачано 12/12").assertIsDisplayed()
         compose.onNodeWithText("Нажмите, чтобы обновить").assertDoesNotExist()
         compose.onNodeWithText("Удалить загрузку").assertIsDisplayed()
+    }
+
+    @Test fun pausedShowsResumeAndDeleteNeedsConfirmation() {
+        val entry = OfflinePlaylist("liked", "1", "liked", "Мне нравится", tracks.map { it.id }, SyncStatus.PAUSED, 5, 12)
+        var resumed = false
+        var removed = false
+        compose.setContent {
+            Viewport {
+                TrackPage("Мне нравится · 12", tracks, false, null, {}, {},
+                    header = { downloadControls(entry, false, { resumed = true }, {}, { removed = true }) },
+                    isLocal = { it.id.toInt() <= 5 }) {}
+            }
+        }
+        compose.onNodeWithText("Пауза · 5/12").assertIsDisplayed()
+        insideSafeArea("round-list")
+        screenshot("liked-paused-466dp")
+        compose.onNodeWithText("▶ Продолжить загрузку").performClick()
+        assertTrue(resumed)
+        compose.onNodeWithText("Удалить загрузку").performClick()
+        assertTrue("first tap only asks", !removed)
+        compose.onNodeWithText("Точно удалить?").assertIsDisplayed().performClick()
+        assertTrue(removed)
     }
 
     @Test fun downloadsLibraryListsAndScrollsToBack() {

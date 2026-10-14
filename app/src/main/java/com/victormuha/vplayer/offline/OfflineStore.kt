@@ -22,8 +22,8 @@ class OfflineStore(val root: File) {
 
     init {
         root.mkdirs()
-        // Interrupted downloads never become visible: drop stale partial files.
-        root.listFiles()?.filter { it.name.endsWith(".part") || it.name == "$LIBRARY.tmp" }?.forEach { it.delete() }
+        // Partial .part files are kept for resume; only an interrupted library write is dropped.
+        File(root, "$LIBRARY.tmp").delete()
     }
 
     private val _library = MutableStateFlow(load())
@@ -87,16 +87,20 @@ class OfflineStore(val root: File) {
         val kept = lib.tracks.filterKeys { it in referenced }
         val next = lib.copy(tracks = kept)
         val names = kept.values.mapNotNull { it.fileName }.toSet()
+        val partNames = kept.keys.map { fileFor(it).name + ".part" }.toSet()
         withContext(Dispatchers.IO) {
             if (next != lib) persist(next)
-            val orphans = root.listFiles()?.filter { it.name.endsWith(".mp3") && it.name !in names } ?: emptyList()
+            val orphans = root.listFiles()?.filter {
+                (it.name.endsWith(".mp3") && it.name !in names) || (it.name.endsWith(".part") && it.name !in partNames)
+            } ?: emptyList()
             orphans.forEach { it.delete() }
             _library.value = next
             orphans.size
         }
     }
 
-    fun usedBytes(): Long = root.listFiles()?.filter { it.name.endsWith(".mp3") }?.sumOf { it.length() } ?: 0L
+    fun usedBytes(): Long =
+        root.listFiles()?.filter { it.name.endsWith(".mp3") || it.name.endsWith(".part") }?.sumOf { it.length() } ?: 0L
     fun freeBytes(): Long = root.usableSpace
 
     companion object {

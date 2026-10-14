@@ -24,7 +24,7 @@ data class OfflineTrack(
 }
 
 @Serializable
-enum class SyncStatus { QUEUED, DOWNLOADING, DONE, PARTIAL, FAILED, NO_SPACE }
+enum class SyncStatus { QUEUED, DOWNLOADING, PAUSED, DONE, PARTIAL, FAILED, NO_SPACE }
 
 @Serializable
 data class OfflinePlaylist(

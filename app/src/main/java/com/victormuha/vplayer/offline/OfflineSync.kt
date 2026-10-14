@@ -17,6 +17,7 @@ class OfflineSync(
         key: String, ownerUid: String, kind: String, title: String,
         onProgress: suspend (done: Int, total: Int) -> Unit = { _, _ -> }
     ): SyncStatus {
+        if (isPaused(key)) return SyncStatus.PAUSED
         val fresh = try { fetchTracks() } catch (e: CancellationException) { throw e } catch (e: Exception) { null }
         val previous = store.library.value
         val tracks: List<OfflineTrack> = fresh?.filter { it.available && it.id.isNotBlank() }
@@ -64,10 +65,13 @@ class OfflineSync(
             updateProgress(key, done, tracks.size)
             onProgress(done, tracks.size)
         }
+        if (isPaused(key)) return SyncStatus.PAUSED
         val status = if (failures == 0) SyncStatus.DONE else SyncStatus.PARTIAL
         store.setPlaylistStatus(key, status, if (failures == 0) null else "Не скачано: $failures")
         return status
     }
+
+    private fun isPaused(key: String) = store.library.value.playlists[key]?.status == SyncStatus.PAUSED
 
     private suspend fun upsertPlaylist(
         key: String, ownerUid: String, kind: String, title: String,

@@ -1,4 +1,4 @@
-# Сборка vPlayer (v0.3.0)
+# Сборка vPlayer (v0.3.1)
 
 ## Окружение
 
@@ -139,3 +139,9 @@ ANDROID_HOME=$HOME/android-sdk ./gradlew :app:testDebugUnitTest :app:assembleRel
 
 Скачанные треки лежат в `/data/data/com.victormuha.vplayer/files/offline/`; посмотреть на
 отладочной сборке можно через `adb shell run-as com.victormuha.vplayer ls -la files/offline`.
+
+## v0.3.1
+
+`versionCode 5`, `versionName 0.3.1`. Новых зависимостей и разрешений нет.
+`.part`-файлы в `files/offline/` теперь сохраняются между запусками для докачки и удаляются
+вместе с плейлистом или «Удалить всё скачанное».
