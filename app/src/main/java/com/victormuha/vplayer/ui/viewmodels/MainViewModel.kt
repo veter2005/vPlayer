@@ -5,6 +5,15 @@ import android.content.SharedPreferences
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.victormuha.vplayer.api.ApiClient
+import com.victormuha.vplayer.offline.OfflineKeys
+import com.victormuha.vplayer.offline.OfflineLibrary
+import com.victormuha.vplayer.offline.OfflineStore
+import com.victormuha.vplayer.offline.OfflineSyncWorker
+import com.victormuha.vplayer.settings.AppSettings
+import com.victormuha.vplayer.settings.NetworkMonitor
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -44,7 +53,19 @@ class MainViewModel : ViewModel() {
     val error: StateFlow<String?> = _error.asStateFlow()
 
     private lateinit var prefs: SharedPreferences
+    private lateinit var appContext: Context
     private var initialized = false
+
+    /** True when forced offline in settings or no network: UI reads only local data. */
+    val offline: StateFlow<Boolean> = combine(NetworkMonitor.online, AppSettings.forcedOffline) { online, forced ->
+        forced || !online
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, NetworkMonitor.isOffline())
+
+    private val emptyLibrary = MutableStateFlow(OfflineLibrary())
+    val offlineLibrary: StateFlow<OfflineLibrary>
+        get() = if (::appContext.isInitialized) OfflineStore.get(appContext).library else emptyLibrary
+
+    private fun store() = OfflineStore.get(appContext)
 
     // Device code state
     private val _deviceCode = MutableStateFlow<ApiClient.DeviceCode?>(null)
@@ -57,16 +78,26 @@ class MainViewModel : ViewModel() {
     fun init(context: Context) {
         if (initialized) return
         initialized = true
-        prefs = context.getSharedPreferences("vplayer", Context.MODE_PRIVATE)
+        appContext = context.applicationContext
+        prefs = context.getSharedPreferences(AppSettings.PREFS, Context.MODE_PRIVATE)
 
         val tok = prefs.getString("token", null)
         _token.value = tok
         ApiClient.token = tok
 
         if (tok != null) {
+            // Open instantly with the cached account so the app also starts without network.
+            prefs.getString("uid", null)?.let {
+                _uid.value = it
+                _navigation.value = NavigationState("home")
+            }
             loadAccount()
         } else {
             _navigation.value = NavigationState("login")
+        }
+        // Re-validate the account once the network comes back.
+        viewModelScope.launch {
+            offline.collect { off -> if (!off && _token.value != null && _uid.value == null) loadAccount() }
         }
     }
 
@@ -81,7 +112,7 @@ class MainViewModel : ViewModel() {
         pollJob?.cancel()
         pollJob = null
         _deviceCode.value = null
-        prefs.edit().remove("token").apply()
+        prefs.edit().remove("token").remove("uid").apply()
         _token.value = null
         _uid.value = null
         ApiClient.token = null
@@ -96,12 +127,20 @@ class MainViewModel : ViewModel() {
         viewModelScope.launch {
             _loading.value = true
             ApiClient.accountStatus { uid, err ->
-                if (err != null) {
-                    _error.value = "Account: $err"
-                    _navigation.value = NavigationState("login")
-                } else {
-                    _uid.value = uid
-                    _navigation.value = NavigationState("home")
+                when {
+                    err == "unauthorized" -> {
+                        _error.value = "Сессия истекла, войдите снова"
+                        _navigation.value = NavigationState("login")
+                    }
+                    err != null -> {
+                        // Network problem: keep the cached account and stay usable offline.
+                        if (_navigation.value.screen == "login") _navigation.value = NavigationState("home")
+                    }
+                    else -> {
+                        prefs.edit().putString("uid", uid).apply()
+                        _uid.value = uid
+                        if (_navigation.value.screen == "login") _navigation.value = NavigationState("home")
+                    }
                 }
                 _loading.value = false
             }
@@ -125,6 +164,8 @@ class MainViewModel : ViewModel() {
         val current = _navigation.value.screen
         _navigation.value = when (current) {
             "playlist" -> NavigationState("playlists")
+            "downloads" -> NavigationState("home")
+            "download" -> NavigationState("downloads")
             "playlists" -> NavigationState("home")
             "liked" -> NavigationState("home")
             "search" -> NavigationState("home")
@@ -210,14 +251,23 @@ class MainViewModel : ViewModel() {
     }
 
     // ---------------- Liked tracks ----------------
+    private fun localTracks(key: String) = store().library.value.tracksOf(key).map { it.toApiTrack() }
+
     fun loadLikedTracks() {
+        if (offline.value) {
+            _error.value = null
+            _likedTracks.value = localTracks(OfflineKeys.LIKED)
+            if (_likedTracks.value.isEmpty()) _error.value = "Нет сети. «Мне нравится» не скачано"
+            return
+        }
         val uid = _uid.value ?: return
         viewModelScope.launch {
             _error.value = null
             _loading.value = true
             ApiClient.likedTracks(uid) { tracks, err ->
                 if (err != null) {
-                    _error.value = "Liked: $err"
+                    val local = localTracks(OfflineKeys.LIKED)
+                    if (local.isNotEmpty()) _likedTracks.value = local else _error.value = "Liked: $err"
                 } else {
                     _likedTracks.value = tracks ?: emptyList()
                 }
@@ -227,14 +277,24 @@ class MainViewModel : ViewModel() {
     }
 
     // ---------------- Playlists ----------------
+    private fun localPlaylists() = store().library.value.playlists.values
+        .filter { it.key != OfflineKeys.LIKED }
+        .map { ApiClient.Playlist(it.kind, it.title, it.trackIds.size, it.ownerUid) }
+
     fun loadPlaylists() {
+        if (offline.value) {
+            _error.value = null
+            _playlists.value = localPlaylists()
+            return
+        }
         val uid = _uid.value ?: return
         viewModelScope.launch {
             _error.value = null
             _loading.value = true
             ApiClient.playlistsList(uid) { pl, err ->
                 if (err != null) {
-                    _error.value = "Playlists: $err"
+                    val local = localPlaylists()
+                    if (local.isNotEmpty()) _playlists.value = local else _error.value = "Playlists: $err"
                 } else {
                     _playlists.value = pl ?: emptyList()
                 }
@@ -245,12 +305,21 @@ class MainViewModel : ViewModel() {
 
     fun loadPlaylistTracks(kind: String, ownerUid: String? = null) {
         val uid = ownerUid ?: _uid.value ?: return
+        val key = OfflineKeys.playlist(uid, kind)
+        if (offline.value) {
+            _error.value = null
+            _playlistTracks.value = _playlistTracks.value + ("$uid:$kind" to localTracks(key))
+            if (localTracks(key).isEmpty()) _error.value = "Нет сети. Плейлист не скачан"
+            return
+        }
         viewModelScope.launch {
             _error.value = null
             _loading.value = true
             ApiClient.playlistTracks(uid, kind) { tracks, err ->
                 if (err != null) {
-                    _error.value = "Playlist: $err"
+                    val local = localTracks(key)
+                    if (local.isNotEmpty()) _playlistTracks.value = _playlistTracks.value + ("$uid:$kind" to local)
+                    else _error.value = "Playlist: $err"
                 } else if (tracks != null) {
                     _playlistTracks.value = _playlistTracks.value + ("$uid:$kind" to tracks)
                 }
@@ -277,6 +346,28 @@ class MainViewModel : ViewModel() {
             }
         }
     }
+
+    // ---------------- Offline downloads ----------------
+    fun downloadLiked() {
+        val uid = _uid.value ?: return
+        OfflineSyncWorker.enqueue(appContext, OfflineKeys.LIKED, uid, OfflineKeys.LIKED, "Мне нравится")
+    }
+
+    fun downloadPlaylist(ownerUid: String, kind: String, title: String) {
+        OfflineSyncWorker.enqueue(appContext, OfflineKeys.playlist(ownerUid, kind), ownerUid, kind, title)
+    }
+
+    fun removeDownload(key: String) {
+        OfflineSyncWorker.cancel(appContext, key)
+        viewModelScope.launch { store().removePlaylist(key) }
+    }
+
+    fun clearDownloads() {
+        OfflineSyncWorker.cancelAll(appContext)
+        viewModelScope.launch { store().clearAll() }
+    }
+
+    fun storageInfo(): Pair<Long, Long> = store().usedBytes() to store().freeBytes()
 
     fun clearError() {
         _error.value = null

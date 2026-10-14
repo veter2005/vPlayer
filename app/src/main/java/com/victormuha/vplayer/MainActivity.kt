@@ -1,6 +1,11 @@
 package com.victormuha.vplayer
 
+import android.Manifest
 import android.content.ComponentName
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
@@ -62,17 +67,27 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private val notificationPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* media notification is optional */ }
+
     override fun onStart() {
         super.onStart()
+        // Local binder only; playback itself is kept alive by the started foreground service.
         bindServiceAutoCreate(
-            Intent(this, PlaybackService::class.java),
+            Intent(this, PlaybackService::class.java).setAction(PlaybackService.ACTION_LOCAL_BIND),
             serviceConnection
         )
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
     }
 
     override fun onStop() {
         super.onStop()
-        unbindService(serviceConnection)
+        // Unbinding does NOT stop music anymore: the service is started and foreground while playing.
+        runCatching { unbindService(serviceConnection) }
         playbackViewModel.onServiceDisconnected()
     }
 }
