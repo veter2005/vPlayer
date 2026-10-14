@@ -9,6 +9,7 @@ import com.victormuha.vplayer.offline.OfflineKeys
 import com.victormuha.vplayer.offline.OfflineLibrary
 import com.victormuha.vplayer.offline.OfflineStore
 import com.victormuha.vplayer.offline.OfflineSyncWorker
+import com.victormuha.vplayer.offline.SyncStatus
 import com.victormuha.vplayer.settings.AppSettings
 import com.victormuha.vplayer.settings.NetworkMonitor
 import kotlinx.coroutines.flow.SharingStarted
@@ -355,6 +356,17 @@ class MainViewModel : ViewModel() {
 
     fun downloadPlaylist(ownerUid: String, kind: String, title: String) {
         OfflineSyncWorker.enqueue(appContext, OfflineKeys.playlist(ownerUid, kind), ownerUid, kind, title)
+    }
+
+    /** Stops the worker but keeps every downloaded file and the partial one for resume. */
+    fun pauseDownload(key: String) {
+        OfflineSyncWorker.cancel(appContext, key)
+        viewModelScope.launch { store().setPlaylistStatus(key, SyncStatus.PAUSED) }
+    }
+
+    fun resumeDownload(key: String) {
+        val p = store().library.value.playlists[key] ?: return
+        if (key == OfflineKeys.LIKED) downloadLiked() else downloadPlaylist(p.ownerUid, p.kind, p.title)
     }
 
     fun removeDownload(key: String) {
