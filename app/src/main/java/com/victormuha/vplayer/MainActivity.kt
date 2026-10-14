@@ -23,6 +23,7 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.victormuha.vplayer.player.service.PlaybackService
+import com.victormuha.vplayer.offline.DownloadCoordinator
 import com.victormuha.vplayer.ui.screens.HomeScreen
 import com.victormuha.vplayer.ui.screens.LoginScreen
 import com.victormuha.vplayer.ui.theme.VplayerTheme
@@ -77,6 +78,8 @@ class MainActivity : ComponentActivity() {
             Intent(this, PlaybackService::class.java).setAction(PlaybackService.ACTION_LOCAL_BIND),
             serviceConnection
         )
+        // Resume unfinished downloads (queue state is persisted in the offline library).
+        DownloadCoordinator.start(applicationContext)
         if (Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
