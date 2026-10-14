@@ -9,6 +9,7 @@ import com.victormuha.vplayer.offline.OfflineKeys
 import com.victormuha.vplayer.offline.OfflineLibrary
 import com.victormuha.vplayer.offline.OfflineStore
 import com.victormuha.vplayer.offline.OfflineSyncWorker
+import com.victormuha.vplayer.offline.DownloadCoordinator
 import com.victormuha.vplayer.offline.SyncStatus
 import com.victormuha.vplayer.settings.AppSettings
 import com.victormuha.vplayer.settings.NetworkMonitor
@@ -351,17 +352,23 @@ class MainViewModel : ViewModel() {
     // ---------------- Offline downloads ----------------
     fun downloadLiked() {
         val uid = _uid.value ?: return
-        OfflineSyncWorker.enqueue(appContext, OfflineKeys.LIKED, uid, OfflineKeys.LIKED, "Мне нравится")
+        viewModelScope.launch {
+            DownloadCoordinator.request(appContext, OfflineKeys.LIKED, uid, OfflineKeys.LIKED, "Мне нравится")
+        }
     }
 
     fun downloadPlaylist(ownerUid: String, kind: String, title: String) {
-        OfflineSyncWorker.enqueue(appContext, OfflineKeys.playlist(ownerUid, kind), ownerUid, kind, title)
+        viewModelScope.launch {
+            DownloadCoordinator.request(appContext, OfflineKeys.playlist(ownerUid, kind), ownerUid, kind, title)
+        }
     }
 
     /** Stops the worker but keeps every downloaded file and the partial one for resume. */
     fun pauseDownload(key: String) {
-        OfflineSyncWorker.cancel(appContext, key)
-        viewModelScope.launch { store().setPlaylistStatus(key, SyncStatus.PAUSED) }
+        viewModelScope.launch {
+            store().setPlaylistStatus(key, SyncStatus.PAUSED) // first, so the queue skips it
+            DownloadCoordinator.cancelAndWait(key)
+        }
     }
 
     fun resumeDownload(key: String) {
@@ -370,13 +377,22 @@ class MainViewModel : ViewModel() {
     }
 
     fun removeDownload(key: String) {
-        OfflineSyncWorker.cancel(appContext, key)
-        viewModelScope.launch { store().removePlaylist(key) }
+        viewModelScope.launch {
+            store().setPlaylistStatus(key, SyncStatus.PAUSED)
+            DownloadCoordinator.cancelAndWait(key)
+            store().removePlaylist(key)
+        }
     }
 
     fun clearDownloads() {
-        OfflineSyncWorker.cancelAll(appContext)
-        viewModelScope.launch { store().clearAll() }
+        viewModelScope.launch {
+            OfflineSyncWorker.cancel(appContext)
+            store().update { lib ->
+                lib.copy(playlists = lib.playlists.mapValues { it.value.copy(status = SyncStatus.PAUSED) })
+            }
+            DownloadCoordinator.cancelAndWait()
+            store().clearAll()
+        }
     }
 
     fun storageInfo(): Pair<Long, Long> = store().usedBytes() to store().freeBytes()

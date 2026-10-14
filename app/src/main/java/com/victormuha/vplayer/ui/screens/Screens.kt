@@ -649,7 +649,7 @@ fun SettingsScreenContent(main: MainViewModel, playback: PlaybackViewModel) {
         item { VolumeControl(volume, { playback.setVolume(it) }) }
         item {
             Text(
-                "v0.3.1\n${config.screenWidthDp} × ${config.screenHeightDp} dp\n" +
+                "v0.3.2\n${config.screenWidthDp} × ${config.screenHeightDp} dp\n" +
                     "Плотность ${"%.2f".format(density)}",
                 color = Color.Gray, fontSize = 10.sp, textAlign = TextAlign.Center
             )

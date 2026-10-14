@@ -41,6 +41,11 @@
             </intent-filter>
         </service>
 
+        <service
+            android:name=".offline.DownloadService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
         <!-- WorkManager foreground downloads (Android 14 requires an explicit type). -->
         <service
             android:name="androidx.work.impl.foreground.SystemForegroundService"

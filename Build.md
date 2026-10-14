@@ -1,4 +1,4 @@
-# Сборка vPlayer (v0.3.1)
+# Сборка vPlayer (v0.3.2)
 
 ## Окружение
 
@@ -145,3 +145,8 @@ ANDROID_HOME=$HOME/android-sdk ./gradlew :app:testDebugUnitTest :app:assembleRel
 `versionCode 5`, `versionName 0.3.1`. Новых зависимостей и разрешений нет.
 `.part`-файлы в `files/offline/` теперь сохраняются между запусками для докачки и удаляются
 вместе с плейлистом или «Удалить всё скачанное».
+
+## v0.3.2
+
+`versionCode 6`, `versionName 0.3.2`. В манифест добавлен `.offline.DownloadService`
+(`foregroundServiceType="dataSync"`); новых зависимостей и разрешений нет.
