@@ -24,6 +24,16 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.victormuha.vplayer.api.ApiClient
+import com.victormuha.vplayer.offline.OfflineKeys
+import com.victormuha.vplayer.offline.OfflineLibrary
+import com.victormuha.vplayer.offline.OfflinePlaylist
+import com.victormuha.vplayer.offline.SyncStatus
+import com.victormuha.vplayer.settings.AppSettings
+import android.content.Intent
+import android.net.Uri
+import android.os.PowerManager
+import android.provider.Settings
+import androidx.compose.ui.platform.LocalContext
 import com.victormuha.vplayer.player.service.PlaybackService
 import com.victormuha.vplayer.ui.components.CircularProgress
 import com.victormuha.vplayer.ui.components.RoundPage
@@ -46,12 +56,80 @@ fun HomeScreen(mainViewModel: MainViewModel, playbackViewModel: PlaybackViewMode
         "player-actions" -> PlayerActions(mainViewModel, playbackViewModel)
         "queue" -> QueueScreenContent(mainViewModel, playbackViewModel)
         "settings" -> SettingsScreenContent(mainViewModel, playbackViewModel)
-        else -> RoundPage("vPlayer") {
-            item { MenuButton("Мне нравится") { mainViewModel.navigate("liked") } }
-            item { MenuButton("Плейлисты") { mainViewModel.navigate("playlists") } }
-            item { MenuButton("Поиск") { mainViewModel.navigate("search") } }
-            item { MenuButton("Плеер") { mainViewModel.navigate("player") } }
-            item { MenuButton("Настройки") { mainViewModel.navigate("settings") } }
+        "downloads" -> DownloadsScreenContent(mainViewModel, playbackViewModel)
+        "download" -> DownloadDetailScreenContent(mainViewModel, playbackViewModel)
+        else -> {
+            val offline by mainViewModel.offline.collectAsState()
+            val library by mainViewModel.offlineLibrary.collectAsState()
+            HomePage(offline, library.playlists.size) { mainViewModel.navigate(it) }
+        }
+    }
+}
+
+@Composable
+internal fun HomePage(offline: Boolean, downloadedPlaylists: Int, onNavigate: (String) -> Unit) {
+    RoundPage("vPlayer") {
+        if (offline) item("offline-badge") { OfflineBadge() }
+        item { MenuButton("Мне нравится") { onNavigate("liked") } }
+        item { MenuButton("Плейлисты") { onNavigate("playlists") } }
+        item {
+            MenuButton("Скачанное", if (downloadedPlaylists > 0) "$downloadedPlaylists шт." else "") {
+                onNavigate("downloads")
+            }
+        }
+        if (!offline) item { MenuButton("Поиск") { onNavigate("search") } }
+        item { MenuButton("Плеер") { onNavigate("player") } }
+        item { MenuButton("Настройки") { onNavigate("settings") } }
+    }
+}
+
+@Composable
+private fun OfflineBadge() {
+    Text(
+        "● Оффлайн: только скачанное", color = Color(0xFFFFA040), fontSize = 10.sp,
+        textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().testTag("offline-badge")
+    )
+}
+
+/** Download / progress / refresh / delete controls shared by "liked" and playlist pages. */
+internal fun LazyListScope.downloadControls(
+    entry: OfflinePlaylist?, offline: Boolean, onDownload: () -> Unit, onRemove: () -> Unit
+) {
+    when (entry?.status) {
+        null -> if (!offline) item("download") { MenuButton("⬇ Скачать для оффлайна", onClick = onDownload) }
+        SyncStatus.QUEUED, SyncStatus.DOWNLOADING -> {
+            item("download-progress") {
+                val total = entry.total.coerceAtLeast(1)
+                Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        if (entry.status == SyncStatus.QUEUED) "В очереди на загрузку" else "Загрузка ${entry.done}/${entry.total}",
+                        color = Accent, fontSize = 11.sp
+                    )
+                    LinearProgressIndicator(
+                        progress = { entry.done.toFloat() / total },
+                        modifier = Modifier.fillMaxWidth(0.8f).padding(top = 3.dp), color = Accent
+                    )
+                }
+            }
+            item("download-cancel") { MenuButton("Отменить загрузку", onClick = onRemove) }
+        }
+        SyncStatus.DONE -> {
+            item("download-done") {
+                MenuButton("✓ Скачано ${entry.done}/${entry.total}", if (offline) "" else "Нажмите, чтобы обновить") {
+                    if (!offline) onDownload()
+                }
+            }
+            item("download-remove") { MenuButton("Удалить загрузку", onClick = onRemove) }
+        }
+        SyncStatus.PARTIAL, SyncStatus.FAILED, SyncStatus.NO_SPACE -> {
+            item("download-warn") {
+                Text(
+                    entry.message ?: "Скачано ${entry.done}/${entry.total}", color = Color(0xFFFF8080),
+                    fontSize = 11.sp, textAlign = TextAlign.Center
+                )
+            }
+            if (!offline) item("download-retry") { MenuButton("Докачать", "${entry.done}/${entry.total}", onDownload) }
+            item("download-remove") { MenuButton("Удалить загрузку", onClick = onRemove) }
         }
     }
 }
@@ -130,10 +208,19 @@ fun LikedScreenContent(main: MainViewModel, playback: PlaybackViewModel) {
     val loading by main.loading.collectAsState()
     val error by main.error.collectAsState()
     val uid by main.uid.collectAsState()
-    LaunchedEffect(uid) { main.loadLikedTracks() }
+    val offline by main.offline.collectAsState()
+    val library by main.offlineLibrary.collectAsState()
+    LaunchedEffect(uid, offline) { main.loadLikedTracks() }
     TrackPage(
         "Мне нравится · ${tracks.size}", tracks, loading, error,
-        { main.loadLikedTracks() }, { main.goBack() }
+        { main.loadLikedTracks() }, { main.goBack() },
+        header = {
+            if (offline) item("offline-badge") { OfflineBadge() }
+            downloadControls(library.playlists[OfflineKeys.LIKED], offline, { main.downloadLiked() }) {
+                main.removeDownload(OfflineKeys.LIKED)
+            }
+        },
+        isLocal = { library.tracks[it.id]?.fileName != null }
     ) { index ->
         playback.setQueue(tracks, index, uid ?: "")
         main.navigate("player")
@@ -146,7 +233,8 @@ fun PlaylistsScreenContent(main: MainViewModel, playback: PlaybackViewModel) {
     val loading by main.loading.collectAsState()
     val error by main.error.collectAsState()
     val uid by main.uid.collectAsState()
-    LaunchedEffect(uid) { main.loadPlaylists() }
+    val offline by main.offline.collectAsState()
+    LaunchedEffect(uid, offline) { main.loadPlaylists() }
     PlaylistPage(playlists, loading, error, { main.loadPlaylists() }, { main.goBack() }) { playlist ->
         main.navigate("playlist", playlist.kind, playlist.title, playlist.uid)
     }
@@ -178,10 +266,20 @@ fun PlaylistDetailScreenContent(main: MainViewModel, playback: PlaybackViewModel
     val tracks = allTracks["$owner:$kind"] ?: emptyList()
     val loading by main.loading.collectAsState()
     val error by main.error.collectAsState()
-    LaunchedEffect(owner, kind) { main.loadPlaylistTracks(kind, owner) }
+    val offline by main.offline.collectAsState()
+    val library by main.offlineLibrary.collectAsState()
+    val key = OfflineKeys.playlist(owner, kind)
+    LaunchedEffect(owner, kind, offline) { main.loadPlaylistTracks(kind, owner) }
     TrackPage(
         nav.playlistTitle, tracks, loading, error,
-        { main.loadPlaylistTracks(kind, owner) }, { main.goBack() }
+        { main.loadPlaylistTracks(kind, owner) }, { main.goBack() },
+        header = {
+            if (offline) item("offline-badge") { OfflineBadge() }
+            downloadControls(library.playlists[key], offline, { main.downloadPlaylist(owner, kind, nav.playlistTitle) }) {
+                main.removeDownload(key)
+            }
+        },
+        isLocal = { library.tracks[it.id]?.fileName != null }
     ) { index ->
         playback.setQueue(tracks, index, uid ?: "")
         main.navigate("player")
@@ -189,15 +287,21 @@ fun PlaylistDetailScreenContent(main: MainViewModel, playback: PlaybackViewModel
 }
 
 @Composable
-private fun TrackPage(
+internal fun TrackPage(
     title: String, tracks: List<ApiClient.Track>, loading: Boolean, error: String?,
-    onRetry: () -> Unit, onBack: () -> Unit, onSelect: (Int) -> Unit
+    onRetry: () -> Unit, onBack: () -> Unit,
+    header: LazyListScope.() -> Unit = {},
+    isLocal: (ApiClient.Track) -> Boolean = { false },
+    onSelect: (Int) -> Unit
 ) {
     RoundPage(title) {
+        header()
         status(loading, error, tracks.isEmpty(), onRetry)
         items(tracks.size) { index ->
             val track = tracks[index]
-            MenuButton(track.title.ifBlank { track.id }, track.artist) { onSelect(index) }
+            MenuButton(track.title.ifBlank { track.id }, (if (isLocal(track)) "✓ " else "") + track.artist) {
+                onSelect(index)
+            }
         }
         item("refresh") { MenuButton("Обновить", onClick = onRetry) }
         item("back") { MenuButton("Назад", onClick = onBack) }
@@ -400,15 +504,124 @@ private fun VolumeControl(volume: Float, onChange: (Float) -> Unit) {
 }
 
 @Composable
+fun DownloadsScreenContent(main: MainViewModel, playback: PlaybackViewModel) {
+    val library by main.offlineLibrary.collectAsState()
+    DownloadsPage(library, { key, title -> main.navigate("download", key, title) }, { main.goBack() })
+}
+
+@Composable
+internal fun DownloadsPage(library: OfflineLibrary, onOpen: (String, String) -> Unit, onBack: () -> Unit) {
+    RoundPage("Скачанное") {
+        val lists = library.playlists.values.sortedWith(compareBy({ it.key != OfflineKeys.LIKED }, { it.title }))
+        if (lists.isEmpty()) item("empty") {
+            Text(
+                "Пока ничего. Откройте плейлист и нажмите «Скачать»", color = Color.LightGray,
+                fontSize = 11.sp, textAlign = TextAlign.Center
+            )
+        }
+        items(lists, key = { it.key }) { p ->
+            val sub = when (p.status) {
+                SyncStatus.DONE -> "✓ ${p.done} треков"
+                SyncStatus.QUEUED -> "в очереди"
+                SyncStatus.DOWNLOADING -> "загрузка ${p.done}/${p.total}"
+                else -> "${p.done}/${p.total} · не всё"
+            }
+            MenuButton(p.title, sub) { onOpen(p.key, p.title) }
+        }
+        item("back") { MenuButton("Назад", onClick = onBack) }
+    }
+}
+
+@Composable
+fun DownloadDetailScreenContent(main: MainViewModel, playback: PlaybackViewModel) {
+    val nav by main.navigation.collectAsState()
+    val library by main.offlineLibrary.collectAsState()
+    val offline by main.offline.collectAsState()
+    val uid by main.uid.collectAsState()
+    val key = nav.playlist ?: ""
+    val entry = library.playlists[key]
+    // Only fully downloaded tracks: this screen must always work in airplane mode.
+    val tracks = library.tracksOf(key).filter { it.fileName != null }.map { it.toApiTrack() }
+    TrackPage(
+        "${nav.playlistTitle} · ${tracks.size}", tracks, false, null, {}, { main.goBack() },
+        header = {
+            if (offline) item("offline-badge") { OfflineBadge() }
+            downloadControls(entry, offline, {
+                entry?.let {
+                    if (key == OfflineKeys.LIKED) main.downloadLiked() else main.downloadPlaylist(it.ownerUid, it.kind, it.title)
+                }
+            }) {
+                main.removeDownload(key)
+                main.goBack()
+            }
+        },
+        isLocal = { true }
+    ) { index ->
+        playback.setQueue(tracks, index, uid ?: "")
+        main.navigate("player")
+    }
+}
+
+private fun formatBytes(bytes: Long): String = when {
+    bytes >= 1L shl 30 -> "%.1f ГБ".format(bytes / (1L shl 30).toDouble())
+    bytes >= 1L shl 20 -> "%.0f МБ".format(bytes / (1L shl 20).toDouble())
+    else -> "${bytes / 1024} КБ"
+}
+
+@Composable
 fun SettingsScreenContent(main: MainViewModel, playback: PlaybackViewModel) {
     val volume by playback.volume.collectAsState()
+    val forcedOffline by AppSettings.forcedOffline.collectAsState()
+    val economy by AppSettings.economyDownloads.collectAsState()
+    val library by main.offlineLibrary.collectAsState()
+    val context = LocalContext.current
+    val storage = remember(library) { main.storageInfo() }
+    var confirmClear by remember { mutableStateOf(false) }
+    val power = context.getSystemService(PowerManager::class.java)
+    var unrestricted by remember { mutableStateOf(power?.isIgnoringBatteryOptimizations(context.packageName) == true) }
     val config = LocalConfiguration.current
     val density = LocalDensity.current.density
     RoundPage("Настройки") {
+        item {
+            MenuButton(if (forcedOffline) "Оффлайн режим: вкл." else "Оффлайн режим: выкл.", "только скачанное") {
+                AppSettings.setForcedOffline(!forcedOffline)
+            }
+        }
+        item {
+            MenuButton("Качество загрузки: " + if (economy) "эконом" else "макс.", if (economy) "~128–192 кбит/с" else "до 320 кбит/с") {
+                AppSettings.setEconomyDownloads(!economy)
+            }
+        }
+        item {
+            Text(
+                "Занято ${formatBytes(storage.first)} · свободно ${formatBytes(storage.second)}",
+                color = Color.LightGray, fontSize = 10.sp, textAlign = TextAlign.Center
+            )
+        }
+        if (library.playlists.isNotEmpty()) item {
+            MenuButton(if (confirmClear) "Точно удалить всё?" else "Удалить всё скачанное") {
+                if (confirmClear) { main.clearDownloads(); confirmClear = false } else confirmClear = true
+            }
+        }
+        item {
+            MenuButton(
+                if (unrestricted) "Фоновая работа: разрешена" else "Разрешить работу в фоне",
+                "для музыки при выключенном экране"
+            ) {
+                val pkg = Uri.parse("package:${context.packageName}")
+                val intents = listOf(
+                    Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, pkg),
+                    Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS),
+                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, pkg)
+                )
+                intents.firstOrNull { runCatching { context.startActivity(it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }.isSuccess }
+                unrestricted = power?.isIgnoringBatteryOptimizations(context.packageName) == true
+            }
+        }
         item { VolumeControl(volume, { playback.setVolume(it) }) }
         item {
             Text(
-                "v0.2.1\n${config.screenWidthDp} × ${config.screenHeightDp} dp\n" +
+                "v0.3.0\n${config.screenWidthDp} × ${config.screenHeightDp} dp\n" +
                     "Плотность ${"%.2f".format(density)}",
                 color = Color.Gray, fontSize = 10.sp, textAlign = TextAlign.Center
             )

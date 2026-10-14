@@ -1,4 +1,4 @@
-# Сборка vPlayer (v0.2.1)
+# Сборка vPlayer (v0.3.0)
 
 ## Окружение
 
@@ -122,3 +122,20 @@ adb shell wm density
 `wm size` сообщает пиксели; размеры Compose измеряются в dp и зависят от плотности.
 В v0.2.1 отступы рассчитываются по текущим ограничениям окна, а размер и плотность
 выведены в «Настройки».
+
+## Изменения сборки в v0.3.0
+
+- Новая зависимость `androidx.work:work-runtime-ktx:2.9.1` (фоновые загрузки), для тестов —
+  `kotlinx-coroutines-test`.
+- В манифесте: `FOREGROUND_SERVICE_DATA_SYNC`, `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`,
+  класс приложения `.VPlayerApp` и переопределение `SystemForegroundService` с
+  `foregroundServiceType="dataSync"` (обязательно для Android 14).
+- `versionCode 4`, `versionName 0.3.0`; ключ подписи не изменился — обновление `adb install -r`
+  сохраняет вход и данные.
+
+```bash
+ANDROID_HOME=$HOME/android-sdk ./gradlew :app:testDebugUnitTest :app:assembleRelease
+```
+
+Скачанные треки лежат в `/data/data/com.victormuha.vplayer/files/offline/`; посмотреть на
+отладочной сборке можно через `adb shell run-as com.victormuha.vplayer ls -la files/offline`.

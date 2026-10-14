@@ -1,28 +1,30 @@
 package com.victormuha.vplayer.player.service
 
-import android.app.NotificationChannel
-import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
 import android.net.Uri
 import android.os.Binder
-import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.PowerManager
 import android.util.Log
-import androidx.core.app.NotificationCompat
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import com.victormuha.vplayer.MainActivity
-import com.victormuha.vplayer.R
-import com.victormuha.vplayer.api.ApiClient
+import com.victormuha.vplayer.VPlayerApp
+import com.victormuha.vplayer.api.Api
+import com.victormuha.vplayer.offline.OfflineStore
+import com.victormuha.vplayer.settings.NetworkMonitor
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -32,13 +34,17 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import kotlin.coroutines.resume
-import kotlin.coroutines.suspendCoroutine
 
+/**
+ * Playback lives here, independent of the Activity:
+ *  - the session is added with [addSession], so Media3 promotes the service to a foreground
+ *    `mediaPlayback` service with a media notification while playing (screen-off/home safe);
+ *  - the service also starts itself on [setQueue], so unbinding the UI never destroys it;
+ *  - ExoPlayer holds wake+wifi locks while playing, and a short partial wake lock covers the
+ *    gap between tracks while the next stream URL is resolved with the screen off.
+ */
 class PlaybackService : MediaSessionService() {
     private val TAG = "PlaybackService"
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
@@ -46,14 +52,9 @@ class PlaybackService : MediaSessionService() {
 
     private lateinit var player: ExoPlayer
     private lateinit var mediaSession: MediaSession
+    private var wakeLock: PowerManager.WakeLock? = null
 
-    // Track queue metadata (kept in sync with player's own queue)
-    data class TrackItem(
-        val trackId: String,
-        val title: String,
-        val artist: String,
-        val durationMs: Long
-    )
+    data class TrackItem(val trackId: String, val title: String, val artist: String, val durationMs: Long)
 
     sealed class PlayerState {
         object Idle : PlayerState()
@@ -65,50 +66,41 @@ class PlaybackService : MediaSessionService() {
             val positionMs: Long,
             val durationMs: Long,
             val shuffle: Boolean,
-            val repeat: RepeatMode
+            val repeat: RepeatMode,
+            val local: Boolean = false
         ) : PlayerState()
         data class Error(val message: String) : PlayerState()
     }
 
     enum class RepeatMode { OFF, ONE, ALL }
 
-    data class QueueInfo(
-        val items: List<TrackItem> = emptyList(),
-        val currentIndex: Int = -1
-    )
+    data class QueueInfo(val items: List<TrackItem> = emptyList(), val currentIndex: Int = -1)
 
     private val _queue = MutableStateFlow(QueueInfo())
     val queue: StateFlow<QueueInfo> = _queue.asStateFlow()
-
     private val _playerState = MutableStateFlow<PlayerState>(PlayerState.Idle)
     val playerState: StateFlow<PlayerState> = _playerState.asStateFlow()
-
     private val _volume = MutableStateFlow(1.0f)
     val volume: StateFlow<Float> = _volume.asStateFlow()
-
     private val _repeatMode = MutableStateFlow(RepeatMode.OFF)
     val repeatMode: StateFlow<RepeatMode> = _repeatMode.asStateFlow()
-
     private val _shuffleEnabled = MutableStateFlow(false)
     val shuffleEnabled: StateFlow<Boolean> = _shuffleEnabled.asStateFlow()
-
     private val _liked = MutableStateFlow(false)
     val liked: StateFlow<Boolean> = _liked.asStateFlow()
 
-    // User's last intent for playback (pause during load must be respected)
-    private var wantPlay: Boolean = true
-
-    // Load job — only one active at a time, cancelled on new selection
+    private var order: List<Int> = emptyList()
+    private var orderPos = -1
+    private var wantPlay = true
     private var loadJob: Job? = null
-
-    // ID of currently loading/playing track
-    private var currentLoadingTrackId: String? = null
-
-    private var positionPollJob: Job? = null
+    private var loadToken = 0L
+    private var currentIsLocal = false
+    private var consecutiveErrors = 0
 
     companion object {
-        private const val CHANNEL_ID = "vplayer_playback"
-        private const val NOTIF_ID = 1
+        const val ACTION_LOCAL_BIND = "com.victormuha.vplayer.action.LOCAL_BIND"
+        private const val SWITCH_WAKE_MS = 30_000L
+        private const val MAX_AUTO_SKIPS = 3
     }
 
     inner class PlaybackBinder : Binder() {
@@ -117,167 +109,156 @@ class PlaybackService : MediaSessionService() {
 
     private val binder = PlaybackBinder()
 
-    override fun onBind(intent: Intent?): IBinder {
-        return binder
-    }
+    /** UI binds with [ACTION_LOCAL_BIND]; Media3 controllers/system UI get the session binder. */
+    override fun onBind(intent: Intent?): IBinder? =
+        if (intent?.action == ACTION_LOCAL_BIND) binder else super.onBind(intent)
 
     override fun onCreate() {
         super.onCreate()
-        createChannel()
-
+        VPlayerApp.initGlobals(applicationContext)
         player = ExoPlayer.Builder(this)
             .setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(C.USAGE_MEDIA)
-                    .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
-                    .build(),
+                AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build(),
                 /* handleAudioFocus = */ true
             )
             .setHandleAudioBecomingNoisy(true)
+            .setWakeMode(C.WAKE_MODE_NETWORK)
             .build()
-
         player.addListener(playerListener)
 
-        mediaSession = MediaSession.Builder(this, player).build()
+        val openApp = PendingIntent.getActivity(
+            this, 0, Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        mediaSession = MediaSession.Builder(this, QueuePlayer(player)).setSessionActivity(openApp).build()
+        addSession(mediaSession)
 
-        // Poll position for UI
-        positionPollJob = serviceScope.launch {
+        wakeLock = (getSystemService(POWER_SERVICE) as PowerManager)
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "vplayer:track-switch")
+            .apply { setReferenceCounted(false) }
+
+        serviceScope.launch {
             while (isActive) {
-                updatePositionState()
-                delay(500L)
+                if (player.isPlaying) updatePositionState()
+                delay(1000L)
             }
         }
     }
 
-    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? {
-        return mediaSession
+    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession = mediaSession
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        // Swiping the app away keeps music playing; an idle/paused service is stopped.
+        if (!player.playWhenReady || _queue.value.items.isEmpty()) stopSelf()
+    }
+
+    /** Exposes next/previous to notification, Bluetooth headset and watch media controls. */
+    private inner class QueuePlayer(p: Player) : ForwardingPlayer(p) {
+        private val extra = intArrayOf(
+            Player.COMMAND_SEEK_TO_NEXT, Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM,
+            Player.COMMAND_SEEK_TO_PREVIOUS, Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM
+        )
+        override fun getAvailableCommands(): Player.Commands =
+            super.getAvailableCommands().buildUpon().addAll(*extra).build()
+        override fun isCommandAvailable(command: Int) = command in extra || super.isCommandAvailable(command)
+        override fun hasNextMediaItem() = _queue.value.items.isNotEmpty()
+        override fun hasPreviousMediaItem() = _queue.value.items.isNotEmpty()
+        override fun seekToNext() = next()
+        override fun seekToNextMediaItem() = next()
+        override fun seekToPrevious() = prev()
+        override fun seekToPreviousMediaItem() = prev()
+        override fun play() { wantPlay = true; super.play() }
+        override fun pause() { wantPlay = false; super.pause() }
+        override fun setPlayWhenReady(playWhenReady: Boolean) { wantPlay = playWhenReady; super.setPlayWhenReady(playWhenReady) }
     }
 
     private val playerListener = object : Player.Listener {
-        override fun onIsPlayingChanged(isPlaying: Boolean) {
-            Log.d(TAG, "onIsPlayingChanged: $isPlaying")
-            updatePositionState()
-        }
+        override fun onIsPlayingChanged(isPlaying: Boolean) = updatePositionState()
 
         override fun onPlaybackStateChanged(state: Int) {
             when (state) {
                 Player.STATE_READY -> {
-                    Log.d(TAG, "Player STATE_READY")
-                    // Only transition to Ready if we're in Loading (don't override Ready)
-                    if (_playerState.value is PlayerState.Loading) {
-                        updateReadyState()
-                    }
-                }
-                Player.STATE_BUFFERING -> {
-                    Log.d(TAG, "Player STATE_BUFFERING")
-                    // Stay in Loading state
+                    consecutiveErrors = 0
+                    releaseSwitchWakeLock() // ExoPlayer's own wake lock now covers playback
+                    updateReadyState()
                 }
                 Player.STATE_ENDED -> {
-                    Log.d(TAG, "Player STATE_ENDED")
-                    onTrackEnded()
+                    acquireSwitchWakeLock()
+                    advance(forward = true, auto = true)
                 }
-                Player.STATE_IDLE -> {
-                    Log.d(TAG, "Player STATE_IDLE")
-                    // Don't override Loading — it may be transitioning
-                }
+                else -> Unit
             }
         }
 
-        override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-            Log.d(TAG, "onMediaItemTransition: reason=$reason")
-            if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) {
-                // ExoPlayer auto-advanced; refresh our index & load fresh URL
-                val idx = player.currentMediaItemIndex
-                _queue.update { it.copy(currentIndex = idx) }
-                loadTrackUrl(idx)
-            }
-        }
-
-        override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+        override fun onPlayerError(error: PlaybackException) {
             Log.e(TAG, "onPlayerError: ${error.errorCodeName}")
-            _playerState.value = PlayerState.Error("Playback: ${error.errorCodeName}")
+            consecutiveErrors++
+            if (consecutiveErrors <= MAX_AUTO_SKIPS && _queue.value.items.size > 1) {
+                acquireSwitchWakeLock()
+                advance(forward = true, auto = true)
+            } else {
+                releaseSwitchWakeLock()
+                _playerState.value = PlayerState.Error("Ошибка воспроизведения: ${error.errorCodeName}")
+            }
         }
     }
 
-    // ---------------- Queue management ----------------
+    // ---------------- Queue API (called by UI through the local binder) ----------------
 
-    fun setQueue(items: List<TrackItem>, startIndex: Int, uid: String) {
+    fun setQueue(items: List<TrackItem>, startIndex: Int, @Suppress("UNUSED_PARAMETER") uid: String) {
         handler.post {
+            ensureStarted()
             _queue.value = QueueInfo(items, startIndex)
-            _playerState.value = PlayerState.Idle
             _liked.value = false
-
-            // Build full ExoPlayer queue with placeholder URIs (resolved lazily on play)
-            val mediaItems = items.map { item ->
-                MediaItem.Builder()
-                    .setUri(Uri.parse("placeholder://${item.trackId}"))
-                    .setMediaId(item.trackId)
-                    .setMediaMetadata(
-                        MediaMetadata.Builder()
-                            .setTitle(item.title)
-                            .setArtist(item.artist)
-                            .build()
-                    )
-                    .build()
-            }
-            player.setMediaItems(mediaItems, startIndex, 0L)
-            loadTrackUrl(startIndex)
+            consecutiveErrors = 0
+            wantPlay = true
+            order = QueueLogic.order(items.size, _shuffleEnabled.value, startIndex)
+            startTrack(order.indexOf(startIndex).coerceAtLeast(0))
         }
     }
 
     fun playIndex(index: Int) {
         handler.post {
-            val q = _queue.value
-            if (index < 0 || index >= q.items.size) return@post
-            _queue.value = q.copy(currentIndex = index)
-            loadTrackUrl(index)
+            if (index !in _queue.value.items.indices) return@post
+            ensureStarted()
+            wantPlay = true
+            startTrack(order.indexOf(index).coerceAtLeast(0))
         }
     }
 
     fun next() {
-        val q = _queue.value
-        if (q.items.isEmpty()) return
-        val nextIdx = (q.currentIndex + 1).coerceAtMost(q.items.size - 1)
-        playIndex(nextIdx)
+        handler.post { wantPlay = true; advance(forward = true, auto = false) }
     }
 
     fun prev() {
-        val q = _queue.value
-        if (q.items.isEmpty()) return
-        val prevIdx = (q.currentIndex - 1).coerceAtLeast(0)
-        playIndex(prevIdx)
+        handler.post {
+            if (player.currentPosition > 3_000L || _queue.value.items.size <= 1) {
+                player.seekTo(0)
+            } else {
+                wantPlay = true
+                advance(forward = false, auto = false)
+            }
+        }
     }
 
-    fun seekTo(positionMs: Long) {
-        handler.post { player.seekTo(positionMs) }
-    }
+    fun seekTo(positionMs: Long) { handler.post { player.seekTo(positionMs) } }
 
     fun togglePlayPause() {
         handler.post {
-            if (player.isPlaying) {
+            if (player.playWhenReady) {
                 wantPlay = false
                 player.pause()
             } else {
                 wantPlay = true
-                player.play()
+                if (player.playbackState == Player.STATE_IDLE && orderPos >= 0) startTrack(orderPos)
+                else player.play()
             }
             updatePositionState()
         }
     }
 
-    fun pause() {
-        handler.post {
-            wantPlay = false
-            player.pause()
-        }
-    }
-
-    fun play() {
-        handler.post {
-            wantPlay = true
-            player.play()
-        }
-    }
+    fun pause() { handler.post { wantPlay = false; player.pause() } }
+    fun play() { handler.post { wantPlay = true; player.play() } }
 
     fun setVolume(vol: Float) {
         handler.post {
@@ -289,252 +270,170 @@ class PlaybackService : MediaSessionService() {
     fun setShuffle(enabled: Boolean) {
         handler.post {
             _shuffleEnabled.value = enabled
-            player.shuffleModeEnabled = enabled
+            val current = _queue.value.currentIndex
+            order = QueueLogic.order(_queue.value.items.size, enabled, current)
+            orderPos = order.indexOf(current)
+            updatePositionState()
         }
     }
 
     fun setRepeatMode(mode: RepeatMode) {
         handler.post {
             _repeatMode.value = mode
-            player.repeatMode = when (mode) {
-                RepeatMode.OFF -> Player.REPEAT_MODE_OFF
-                RepeatMode.ONE -> Player.REPEAT_MODE_ONE
-                RepeatMode.ALL -> Player.REPEAT_MODE_ALL
-            }
+            // Single-item player: ONE is handled natively, ALL by our queue wrap-around.
+            player.repeatMode = if (mode == RepeatMode.ONE) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
+            updatePositionState()
         }
     }
 
-    fun setLiked(liked: Boolean) {
-        handler.post { _liked.value = liked }
-    }
+    fun setLiked(liked: Boolean) { handler.post { _liked.value = liked } }
 
     fun stop() {
         handler.post {
             loadJob?.cancel()
-            loadJob = null
-            currentLoadingTrackId = null
+            loadToken++
             wantPlay = true
-            _playerState.value = PlayerState.Idle
             player.stop()
             player.clearMediaItems()
             _queue.value = QueueInfo()
+            order = emptyList()
+            orderPos = -1
+            _playerState.value = PlayerState.Idle
+            releaseSwitchWakeLock()
+            stopSelf()
         }
     }
 
-    // ---------------- Playback core (single job, cancellable) ----------------
+    // ---------------- Core ----------------
 
-    private fun loadTrackUrl(index: Int) {
+    private fun ensureStarted() {
+        // A started (not only bound) service survives the Activity going to background.
+        try {
+            startService(Intent(this, PlaybackService::class.java))
+        } catch (e: IllegalStateException) {
+            Log.w(TAG, "startService not allowed now; Media3 will promote on play")
+        }
+    }
+
+    private fun isPlayable(index: Int): Boolean =
+        !NetworkMonitor.isOffline() || OfflineStore.get(this).isDownloaded(_queue.value.items[index].trackId)
+
+    private fun advance(forward: Boolean, auto: Boolean) {
+        val size = order.size
+        if (size == 0) return
+        val wrap = _repeatMode.value == RepeatMode.ALL || !auto
+        val candidate = QueueLogic.step(orderPos, size, forward, wrap)
+        if (candidate == null) {
+            // End of queue: stop gracefully, keep the last track loaded.
+            releaseSwitchWakeLock()
+            wantPlay = false
+            player.pause()
+            player.seekTo(0)
+            updatePositionState()
+            return
+        }
+        val playable = QueueLogic.findPlayable(size, candidate, forward, wrap) { isPlayable(order[it]) }
+        if (playable == null) {
+            releaseSwitchWakeLock()
+            player.stop()
+            _playerState.value = PlayerState.Error("Нет сети и нет скачанных треков в очереди")
+            return
+        }
+        startTrack(playable)
+    }
+
+    private fun startTrack(pos: Int) {
+        if (pos !in order.indices) return
+        val index = order[pos]
         val item = _queue.value.items.getOrNull(index) ?: return
-        val trackId = item.trackId
-
-        // Cancel previous load
+        orderPos = pos
+        _queue.value = _queue.value.copy(currentIndex = index)
         loadJob?.cancel()
-        currentLoadingTrackId = trackId
-
+        val token = ++loadToken
+        acquireSwitchWakeLock()
         _playerState.value = PlayerState.Loading(item.title, item.artist)
 
-        loadJob = serviceScope.launch {
-            try {
-                val variants = suspendCoroutine<List<ApiClient.DownloadVariant>?> { cont ->
-                    ApiClient.downloadInfo(trackId) { v, e ->
-                        cont.resume(if (e != null) null else v)
-                    }
+        val store = OfflineStore.get(this)
+        when (val source = QueueLogic.chooseSource(store.localFile(item.trackId), NetworkMonitor.isOffline())) {
+            is TrackSource.Local -> applyUri(Uri.fromFile(source.file), item, local = true)
+            TrackSource.Unavailable -> {
+                val nextPos = QueueLogic.findPlayable(order.size, pos, true, true) { isPlayable(order[it]) }
+                if (nextPos != null && nextPos != pos) startTrack(nextPos)
+                else {
+                    releaseSwitchWakeLock()
+                    _playerState.value = PlayerState.Error("Трек не скачан, нет сети")
                 }
-                if (variants == null || variants.isEmpty()) {
-                    withContext(Dispatchers.Main) {
-                        if (currentLoadingTrackId == trackId) {
-                            _playerState.value = PlayerState.Error("No full stream available")
-                        }
-                    }
-                    return@launch
-                }
-
-                // Choose best quality mp3
-                val full = variants
-                    .filter { it.codec == "mp3" && !it.preview && !it.direct }
-                    .maxByOrNull { it.bitrate }
-                    ?: variants.filter { it.codec == "mp3" && !it.preview }.maxByOrNull { it.bitrate }
-
-                if (full == null) {
-                    withContext(Dispatchers.Main) {
-                        if (currentLoadingTrackId == trackId) {
-                            _playerState.value = PlayerState.Error("No full stream available")
-                        }
-                    }
-                    return@launch
-                }
-
-                val url = suspendCoroutine<String?> { cont ->
-                    ApiClient.buildDirectLink(full.downloadInfoUrl) { u, e ->
-                        cont.resume(if (e != null) null else u)
-                    }
-                }
-                if (url == null) {
-                    withContext(Dispatchers.Main) {
-                        if (currentLoadingTrackId == trackId) {
-                            _playerState.value = PlayerState.Error("Could not build direct link")
-                        }
-                    }
-                    return@launch
-                }
-
-                withContext(Dispatchers.Main) {
-                    if (currentLoadingTrackId != trackId) return@withContext // stale
-                    applyTrackToPlayer(url, item)
-                }
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                // Load cancelled by newer selection
-                Log.d(TAG, "Load cancelled: $trackId")
-            } catch (e: Exception) {
-                withContext(Dispatchers.Main) {
-                    if (currentLoadingTrackId == trackId) {
-                        _playerState.value = PlayerState.Error("Network: ${e.message}")
+            }
+            TrackSource.Stream -> loadJob = serviceScope.launch {
+                try {
+                    val (url, _) = Api.resolveTrackUrl(item.trackId)
+                    if (token == loadToken) applyUri(Uri.parse(url), item, local = false)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    if (token != loadToken) return@launch
+                    Log.w(TAG, "resolve failed: ${e.message}")
+                    // Lost network mid-queue: fall back to the next downloaded track.
+                    val fallback = if (NetworkMonitor.isOffline())
+                        QueueLogic.findPlayable(order.size, pos, true, true) { isPlayable(order[it]) } else null
+                    if (fallback != null && fallback != pos) startTrack(fallback)
+                    else {
+                        releaseSwitchWakeLock()
+                        _playerState.value = PlayerState.Error("Сеть: ${e.message}")
                     }
                 }
             }
         }
     }
 
-    private fun applyTrackToPlayer(url: String, item: TrackItem) {
+    private fun applyUri(uri: Uri, item: TrackItem, local: Boolean) {
+        currentIsLocal = local
         val mediaItem = MediaItem.Builder()
-            .setUri(Uri.parse(url))
+            .setUri(uri)
             .setMediaId(item.trackId)
-            .setMediaMetadata(
-                MediaMetadata.Builder()
-                    .setTitle(item.title)
-                    .setArtist(item.artist)
-                    .build()
-            )
+            .setMediaMetadata(MediaMetadata.Builder().setTitle(item.title).setArtist(item.artist).build())
             .build()
-
-        // Replace current item with real URL; other items in queue keep placeholder
-        val idx = _queue.value.currentIndex
-        if (idx >= 0 && idx < player.mediaItemCount) {
-            player.removeMediaItem(idx)
-            player.addMediaItem(idx, mediaItem)
-            player.seekTo(idx, 0L)
-            player.prepare()
-        } else {
-            player.setMediaItem(mediaItem)
-            player.prepare()
-        }
-        if (wantPlay) player.play() else player.pause()
-
-        // Foreground notification
-        startForegroundWithNotification(item)
+        player.setMediaItem(mediaItem)
+        player.prepare()
+        player.playWhenReady = wantPlay
     }
 
-    private fun onTrackEnded() {
-        val q = _queue.value
-        if (q.items.isEmpty()) return
-        val mode = _repeatMode.value
-        val currentIdx = q.currentIndex
+    private fun acquireSwitchWakeLock() {
+        runCatching { wakeLock?.acquire(SWITCH_WAKE_MS) }
+    }
 
-        when (mode) {
-            RepeatMode.ONE -> playIndex(currentIdx)
-            RepeatMode.ALL -> {
-                val nextIdx = (currentIdx + 1) % q.items.size
-                playIndex(nextIdx)
-            }
-            RepeatMode.OFF -> {
-                if (currentIdx < q.items.size - 1) {
-                    playIndex(currentIdx + 1)
-                } else {
-                    _playerState.value = PlayerState.Idle
-                }
-            }
-        }
+    private fun releaseSwitchWakeLock() {
+        runCatching { if (wakeLock?.isHeld == true) wakeLock?.release() }
     }
 
     private fun updatePositionState() {
-        val item = _queue.value.items.getOrNull(_queue.value.currentIndex) ?: return
         when (val cur = _playerState.value) {
-            is PlayerState.Ready -> {
-                _playerState.value = cur.copy(
-                    isPlaying = player.isPlaying,
-                    positionMs = player.currentPosition,
-                    durationMs = player.duration.coerceAtLeast(0L),
-                    shuffle = _shuffleEnabled.value,
-                    repeat = _repeatMode.value
-                )
-            }
-            is PlayerState.Loading -> {
-                // Player may be ready — check
-                if (player.playbackState == Player.STATE_READY) {
-                    updateReadyState()
-                }
-            }
-            else -> {}
+            is PlayerState.Ready -> _playerState.value = cur.copy(
+                isPlaying = player.isPlaying,
+                positionMs = player.currentPosition,
+                durationMs = player.duration.coerceAtLeast(0L),
+                shuffle = _shuffleEnabled.value,
+                repeat = _repeatMode.value,
+                local = currentIsLocal
+            )
+            is PlayerState.Loading -> if (player.playbackState == Player.STATE_READY) updateReadyState()
+            else -> Unit
         }
     }
 
     private fun updateReadyState() {
         val item = _queue.value.items.getOrNull(_queue.value.currentIndex) ?: return
-        if (_playerState.value is PlayerState.Loading) {
-            _playerState.value = PlayerState.Ready(
-                title = item.title,
-                artist = item.artist,
-                isPlaying = player.isPlaying,
-                positionMs = player.currentPosition,
-                durationMs = player.duration.coerceAtLeast(0L),
-                shuffle = _shuffleEnabled.value,
-                repeat = _repeatMode.value
-            )
-        }
-    }
-
-    // ---------------- Notification ----------------
-
-    private fun startForegroundWithNotification(item: TrackItem) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForeground(NOTIF_ID, buildNotification(item.title, item.artist, true))
-        } else {
-            @Suppress("DEPRECATION")
-            startForeground(NOTIF_ID, buildNotification(item.title, item.artist, true))
-        }
-    }
-
-    private fun buildNotification(title: String, artist: String, playing: Boolean): android.app.Notification {
-        val openIntent = PendingIntent.getActivity(
-            this, 0,
-            Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        _playerState.value = PlayerState.Ready(
+            item.title, item.artist, player.isPlaying, player.currentPosition,
+            player.duration.coerceAtLeast(0L), _shuffleEnabled.value, _repeatMode.value, currentIsLocal
         )
-
-        return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_music)
-            .setContentTitle(title)
-            .setContentText(artist)
-            .setContentIntent(openIntent)
-            .setOngoing(playing)
-            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .setOnlyAlertOnce(true)
-            .build()
-    }
-
-    private fun createChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val ch = NotificationChannel(
-                CHANNEL_ID,
-                "Воспроизведение",
-                NotificationManager.IMPORTANCE_LOW
-            )
-            ch.description = "vplayer playback"
-            (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(ch)
-        }
     }
 
     override fun onDestroy() {
-        super.onDestroy()
-        positionPollJob?.cancel()
         serviceScope.cancel()
-        player.release()
+        releaseSwitchWakeLock()
         mediaSession.release()
+        player.release()
+        super.onDestroy()
     }
 }
-
-// suspend helper for ApiClient callbacks
-private suspend fun <T> awaitApi(block: (callback: (T?, String?) -> Unit) -> Unit): T? =
-    suspendCoroutine { cont ->
-        block { value, _ -> cont.resume(value) }
-    }

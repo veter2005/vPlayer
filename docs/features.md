@@ -28,7 +28,7 @@
 | Качество (битрейт) | выбор варианта из `download-info` | Переключатель в настройках | `quality` pref | Зависит от подписки |
 | Громкость | Android `AudioManager` | Кнопки на плеере | `volume` | — |
 | Bluetooth-кнопки | Android `MediaSession` | `Media3 MediaSession` | `MediaSession.Callback` | — |
-| Фоновое воспроизведение | — | `MediaSessionService` | `startForeground` | — |
+| Фоновое воспроизведение | — | `MediaSessionService` + `addSession` + wake lock | исправлено в v0.3.0 | Huawei: разрешить работу в фоне |
 | Круглый экран | — | BoxInsetLayout + custom-View | тест на эмуляторе round | Watch4 Pro не Wear OS SDK |
 
 ## Приоритет 2 — Опциональные (следующие версии)
@@ -38,7 +38,7 @@
 | Моя волна (радио) | `rotor/send-radio-state` | Не реализовано в v0.2.0 | Сложный API, отдельная версия |
 | Рекомендации | `landing/dashboard` | Не реализовано | Отдельная версия |
 | Плейлисты по поиску (добавить в Liked) | `playlists_insert_track` | Не реализовано | Нужен diff-протокол |
-| Offline-кэш | local DB | Не реализовано | Требует Room/SQLite |
+| Offline-кэш | download-info → файл | **Реализовано в v0.3.0** (JSON + mp3 в files/) | Нужна подписка Плюс для полных треков |
 | Голосовой поиск | Android SpeechRecognizer | Не реализовано | Может отсутствовать на Huawei |
 | Подкасты | отдельные endpoints | Не реализовано | Отдельная версия |
 | Альбомы исполнителя | `GET /artists/{id}/albums` | Не реализовано | — |
@@ -46,7 +46,6 @@
 
 ## Что НЕ входит в «полный функционал»
 
-- Скачивание треков для offline (DRM ограничения + нет полного потока без Плюс)
 - Соавторство плейлистов (`playlists_collective_join`)
 - Видео-клипы (`clips` endpoint)
 - Концерты (`concerts`)
@@ -59,3 +58,9 @@
 - Круглая адаптация: `BoxInsetLayout` (или эквивалент), круглые отступы, rotary-скролл
 - Заголовок `X-Yandex-Music-Device` для `POST /queues` (если реализуем)
 - Реализация like/dislike, shuffle, repeat, seek
+
+## Список изменений v0.3.0
+
+- Фоновое воспроизведение: started + foreground сервис, wake lock между треками, next/prev из уведомления и гарнитуры.
+- Оффлайн: скачивание «Мне нравится» и плейлистов, раздел «Скачанное», работа без сети, принудительный оффлайн.
+- Управление хранилищем: обновление/докачка, удаление плейлиста и всего, качество загрузки.
