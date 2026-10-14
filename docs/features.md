@@ -1,0 +1,59 @@
+# vPlayer — Матрица функций для версии 0.2.0
+
+Функциональность API взята из [MarshalX yandex-music-api](https://github.com/MarshalX/yandex-music-api) (реализация полной обёртки Яндекс.Музыки). Приложение Cassette использует ту же библиотеку через `libtape`.
+
+## Приоритет 1 — Обязательные для MVP+ (v0.2.0)
+
+| Функция | Cassette / API | Реализация на часах | Проверка | Ограничение |
+|---|---|---|---|---|
+| Авторизация | OAuth Device Flow | QR-ссылка + код на экране часов | `pollDeviceToken` pending/expired/cancel | — |
+| Выход из аккаунта | очистить токен | Кнопка в настройках | `logout()` | — |
+| Список Liked | `GET /users/{uid}/likes/tracks` | Экран Liked с прокруткой | `likedTracks(uid)` | Требует Плюс для полного потока |
+| Пользовательские плейлисты | `GET /users/{uid}/playlists` | Экран списка плейлистов | `playlistsList()` | — |
+| Содержимое плейлиста | `GET /users/{uid}/playlists/{kind}` | Экран треков плейлиста | `playlistTracks()` | — |
+| Поиск (трек) | `GET /search?text=...&type=track` | Текстовый поиск через BT-клавиатуру | `search(text, "track")` | — |
+| Поиск (плейлист) | `GET /search?text=...&type=playlist` | Тот же экран, tabs | `search(text, "playlist")` | — |
+| Воспроизведение выбранного | `GET /tracks/{id}/download-info` | Media3 ExoPlayer | `downloadInfo()` → `buildDirectLink()` | Нет полного потока → skip/preview |
+| Очередь (локальная) | в приложении | Media3 `Queue` | `mediaPlayer.currentMediaItemIndex` | — |
+| Пауза/Возобновление | — | Media3 `play()/pause()` | `isPlaying` / `isPrepared` | — |
+| Next / Prev | — | Media3 `seekToNext()/seekToPrev()` | — | — |
+| Seek / Перемотка | — | Кольцевой slider (rotary) | `seekTo(positionMs)` | Требует hardware rotary |
+| Прогресс | — | Круговой прогресс-бар | `position` / `duration` | — |
+| Like / Unlike трека | `POST /users/{uid}/likes/tracks/add-multiple` и `/remove` | Кнопка ❤ / 🤍 на плеере | `likeTrack()` / `unlikeTrack()` | — |
+| Dislike (не рекомендовать) | `POST /users/{uid}/dislikes/tracks/add-multiple` | Кнопка 🚫 в списке действий | `dislikeTrack()` | — |
+| Shuffle | — | Кнопка 🔀 на плеере | `shuffleModeEnabled` | — |
+| Repeat | — | Кнопка 🔁 на плеере | `repeatMode` | — |
+| Качество (битрейт) | выбор варианта из `download-info` | Переключатель в настройках | `quality` pref | Зависит от подписки |
+| Громкость | Android `AudioManager` | Кнопки на плеере | `volume` | — |
+| Bluetooth-кнопки | Android `MediaSession` | `Media3 MediaSession` | `MediaSession.Callback` | — |
+| Фоновое воспроизведение | — | `MediaSessionService` | `startForeground` | — |
+| Круглый экран | — | BoxInsetLayout + custom-View | тест на эмуляторе round | Watch4 Pro не Wear OS SDK |
+
+## Приоритет 2 — Опциональные (следующие версии)
+
+| Функция | Cassette / API | Реализация | Ограничение |
+|---|---|---|---|
+| Моя волна (радио) | `rotor/send-radio-state` | Не реализовано в v0.2.0 | Сложный API, отдельная версия |
+| Рекомендации | `landing/dashboard` | Не реализовано | Отдельная версия |
+| Плейлисты по поиску (добавить в Liked) | `playlists_insert_track` | Не реализовано | Нужен diff-протокол |
+| Offline-кэш | local DB | Не реализовано | Требует Room/SQLite |
+| Голосовой поиск | Android SpeechRecognizer | Не реализовано | Может отсутствовать на Huawei |
+| Подкасты | отдельные endpoints | Не реализовано | Отдельная версия |
+| Альбомы исполнителя | `GET /artists/{id}/albums` | Не реализовано | — |
+| Очередь синхронизации между устройствами | `POST /queues` | Не реализовано | Требует device-id |
+
+## Что НЕ входит в «полный функционал»
+
+- Скачивание треков для offline (DRM ограничения + нет полного потока без Плюс)
+- Соавторство плейлистов (`playlists_collective_join`)
+- Видео-клипы (`clips` endpoint)
+- Концерты (`concerts`)
+
+## Список изменений v0.2.0
+
+- Переход на Media3 (ExoPlayer + MediaSession + MediaSessionService)
+- Полная реорганизация на ViewModel + StateFlow
+- Все экраны (Login / Home / Liked / Playlist / Search / Player / Queue / Settings)
+- Круглая адаптация: `BoxInsetLayout` (или эквивалент), круглые отступы, rotary-скролл
+- Заголовок `X-Yandex-Music-Device` для `POST /queues` (если реализуем)
+- Реализация like/dislike, shuffle, repeat, seek

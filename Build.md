@@ -1,11 +1,12 @@
-# Сборка vPlayer
+# Сборка vPlayer (v0.2.0)
 
 ## Окружение
 
 - JDK 17 или выше (проверено на OpenJDK 21)
 - Android SDK Command-line tools + `platforms;android-34` + `build-tools;34.0.0`
-- Gradle 8.7 (можно использовать `gradle wrapper` для генерации локальной обёртки)
-- Android Gradle Plugin (AGP) 8.5.2, Kotlin 1.9.24
+- Gradle 8.7 (стандартная обёртка в репозитории — `./gradlew`)
+- Android Gradle Plugin (AGP) 8.5.2, Kotlin 1.9.24, Compose (1.5.14), Media3 1.3.1
+- Рекомендуется `gradle.properties` с `org.gradle.jvmargs=-Xmx4g` для `material-icons-extended` dexing
 
 ## Шаг 1. Установить JDK и Android SDK
 
@@ -79,22 +80,15 @@ $ANDROID_HOME/build-tools/34.0.0/apksigner verify --verbose app-release.apk
    adb devices
    ```
 
-4. Установите:
+4. Установите (обновит v0.1.0 без потери авторизации):
 
    ```bash
    adb install -r app/build/outputs/apk/release/app-release.apk
    ```
 
-## Генерация локального Gradle wrapper
+## Gradle wrapper
 
-Проект не содержит `gradle/wrapper/` и `gradle-wrapper.jar` (выхолощены в .gitignore). Если вы хотите использовать стандартную Gradle-обёртку:
-
-```bash
-gradle wrapper --gradle-version 8.7
-# создаёт gradle/wrapper/, gradlew, gradle.bat
-```
-
-Локальный `gradlew` в репозитории — bash-скрипт, вызывающий глобальный `gradle --no-daemon`. Если глобальный `gradle` недоступен, сгенерируйте полный wrapper (см. выше).
+В репозитории уже есть стандартная обёртка Gradle 8.7 (`gradle/wrapper/`, `gradlew`, `gradlew.bat`). Скачивание Gradle произойдёт автоматически при первом запуске `./gradlew`.
 
 ## Отладка
 
