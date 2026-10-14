@@ -14,6 +14,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import com.victormuha.vplayer.player.service.PlaybackService
 import com.victormuha.vplayer.ui.screens.HomeScreen
 import com.victormuha.vplayer.ui.screens.LoginScreen
@@ -43,12 +46,17 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            hide(WindowInsetsCompat.Type.systemBars())
+            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
 
         // Init ViewModel with application context (loads saved token, device_id, account)
         mainViewModel.init(applicationContext)
 
         setContent {
-            VplayerTheme {
+            VplayerTheme(darkTheme = true) {
                 MainApp(mainViewModel, playbackViewModel)
             }
         }

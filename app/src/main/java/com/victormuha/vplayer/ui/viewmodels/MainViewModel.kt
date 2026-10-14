@@ -112,11 +112,13 @@ class MainViewModel : ViewModel() {
     data class NavigationState(
         val screen: String,
         val playlist: String? = null,
-        val playlistTitle: String = ""
+        val playlistTitle: String = "",
+        val playlistOwner: String? = null
     )
 
-    fun navigate(screen: String, playlist: String? = null, playlistTitle: String = "") {
-        _navigation.value = NavigationState(screen, playlist, playlistTitle)
+    fun navigate(screen: String, playlist: String? = null, playlistTitle: String = "", ownerUid: String? = null) {
+        _error.value = null
+        _navigation.value = NavigationState(screen, playlist, playlistTitle, ownerUid)
     }
 
     fun goBack() {
@@ -127,6 +129,7 @@ class MainViewModel : ViewModel() {
             "liked" -> NavigationState("home")
             "search" -> NavigationState("home")
             "player" -> NavigationState("home")
+            "player-actions" -> NavigationState("player")
             "queue" -> NavigationState("player")
             "settings" -> NavigationState("home")
             "home" -> NavigationState("home")
@@ -210,6 +213,7 @@ class MainViewModel : ViewModel() {
     fun loadLikedTracks() {
         val uid = _uid.value ?: return
         viewModelScope.launch {
+            _error.value = null
             _loading.value = true
             ApiClient.likedTracks(uid) { tracks, err ->
                 if (err != null) {
@@ -226,6 +230,7 @@ class MainViewModel : ViewModel() {
     fun loadPlaylists() {
         val uid = _uid.value ?: return
         viewModelScope.launch {
+            _error.value = null
             _loading.value = true
             ApiClient.playlistsList(uid) { pl, err ->
                 if (err != null) {
@@ -238,15 +243,16 @@ class MainViewModel : ViewModel() {
         }
     }
 
-    fun loadPlaylistTracks(kind: String) {
-        val uid = _uid.value ?: return
+    fun loadPlaylistTracks(kind: String, ownerUid: String? = null) {
+        val uid = ownerUid ?: _uid.value ?: return
         viewModelScope.launch {
+            _error.value = null
             _loading.value = true
             ApiClient.playlistTracks(uid, kind) { tracks, err ->
                 if (err != null) {
                     _error.value = "Playlist: $err"
                 } else if (tracks != null) {
-                    _playlistTracks.value = _playlistTracks.value + (kind to tracks)
+                    _playlistTracks.value = _playlistTracks.value + ("$uid:$kind" to tracks)
                 }
                 _loading.value = false
             }
