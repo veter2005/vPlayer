@@ -1,408 +1,305 @@
 package com.victormuha.vplayer.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-
-import androidx.compose.material.icons.filled.Favorite
-import androidx.compose.material.icons.filled.FavoriteBorder
-import androidx.compose.material.icons.filled.MusicNote
-import androidx.compose.material.icons.filled.Pause
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.QueueMusic
-import androidx.compose.material.icons.filled.Repeat
-import androidx.compose.material.icons.filled.Shuffle
-import androidx.compose.material.icons.filled.SkipNext
-import androidx.compose.material.icons.filled.SkipPrevious
-import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextField
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.victormuha.vplayer.api.ApiClient
+import com.victormuha.vplayer.player.service.PlaybackService
+import com.victormuha.vplayer.ui.components.CircularProgress
+import com.victormuha.vplayer.ui.components.RoundPage
+import com.victormuha.vplayer.ui.components.RoundScreen
 import com.victormuha.vplayer.ui.viewmodels.MainViewModel
 import com.victormuha.vplayer.ui.viewmodels.PlaybackViewModel
-import com.victormuha.vplayer.player.service.PlaybackService
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.filled.Search
 
-// ---------- Home ----------
+private val Accent = Color(0xFFFFCC00)
+
 @Composable
-fun HomeScreen(
-    mainViewModel: MainViewModel,
-    playbackViewModel: PlaybackViewModel
-) {
+fun HomeScreen(mainViewModel: MainViewModel, playbackViewModel: PlaybackViewModel) {
     val nav by mainViewModel.navigation.collectAsState()
-    val navScreen = nav.screen
-    val navPlaylist = nav.playlist
-    val navTitle = nav.playlistTitle
-    val token by mainViewModel.token.collectAsState()
-    val uid by mainViewModel.uid.collectAsState()
-    val loading by mainViewModel.loading.collectAsState()
-    val error by mainViewModel.error.collectAsState()
-    val deviceCode by mainViewModel.deviceCode.collectAsState()
-
-    if (token == null) { LoginScreen(mainViewModel, playbackViewModel); return }
-    if (uid == null) { LoginScreen(mainViewModel, playbackViewModel); return }
-
-    RoundScreenScaffold(error = error, onDismissError = { mainViewModel.clearError() }) {
-        when (navScreen) {
-            "home" -> HomeContent(mainViewModel, playbackViewModel, navScreen)
-            "liked" -> LikedScreenContent(mainViewModel, playbackViewModel)
-            "playlists" -> PlaylistsScreenContent(mainViewModel, playbackViewModel)
-            "playlist" -> PlaylistDetailScreenContent(mainViewModel, playbackViewModel, navPlaylist, navTitle)
-            "search" -> SearchScreenContent(mainViewModel, playbackViewModel)
-            "player" -> PlayerScreenContent(mainViewModel, playbackViewModel)
-            "queue" -> QueueScreenContent(mainViewModel, playbackViewModel)
-            "settings" -> SettingsScreenContent(mainViewModel, playbackViewModel)
-            else -> HomeContent(mainViewModel, playbackViewModel, navScreen)
+    BackHandler(nav.screen != "home") { mainViewModel.goBack() }
+    when (nav.screen) {
+        "liked" -> LikedScreenContent(mainViewModel, playbackViewModel)
+        "playlists" -> PlaylistsScreenContent(mainViewModel, playbackViewModel)
+        "playlist" -> PlaylistDetailScreenContent(mainViewModel, playbackViewModel)
+        "search" -> SearchScreenContent(mainViewModel, playbackViewModel)
+        "player" -> PlayerScreenContent(mainViewModel, playbackViewModel)
+        "player-actions" -> PlayerActions(mainViewModel, playbackViewModel)
+        "queue" -> QueueScreenContent(mainViewModel, playbackViewModel)
+        "settings" -> SettingsScreenContent(mainViewModel, playbackViewModel)
+        else -> RoundPage("vPlayer") {
+            item { MenuButton("Мне нравится") { mainViewModel.navigate("liked") } }
+            item { MenuButton("Плейлисты") { mainViewModel.navigate("playlists") } }
+            item { MenuButton("Поиск") { mainViewModel.navigate("search") } }
+            item { MenuButton("Плеер") { mainViewModel.navigate("player") } }
+            item { MenuButton("Настройки") { mainViewModel.navigate("settings") } }
         }
     }
 }
 
 @Composable
-fun RoundScreenScaffold(
-    error: String?,
-    onDismissError: () -> Unit,
-    content: @Composable () -> Unit
-) {
-    Box(modifier = Modifier.fillMaxSize()) {
-        content()
-        if (error != null) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 20.dp)
-                    .background(Color(0xFFCC0000), RoundedCornerShape(8.dp))
-            ) {
-                Text(
-                    text = error.take(100),
-                    color = Color.White,
-                    fontSize = 11.sp,
-                    modifier = Modifier.padding(8.dp)
-                )
+private fun MenuButton(title: String, subtitle: String = "", onClick: () -> Unit) {
+    Button(
+        onClick, Modifier.fillMaxWidth().heightIn(min = 44.dp),
+        shape = RoundedCornerShape(16.dp),
+        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 7.dp),
+        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF202020), contentColor = Color.White)
+    ) {
+        Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(title, fontSize = 13.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center)
+            if (subtitle.isNotBlank()) {
+                Text(subtitle, color = Color.LightGray, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
     }
 }
 
-// ---------- Login ----------
+private fun LazyListScope.status(
+    loading: Boolean, error: String?, empty: Boolean, onRetry: () -> Unit
+) {
+    if (loading) item("loading") { CircularProgressIndicator(Modifier.size(24.dp), color = Accent) }
+    if (error != null) {
+        item("error") {
+            Text(error, fontSize = 11.sp, color = Color(0xFFFF8080), textAlign = TextAlign.Center)
+        }
+        item("retry") { MenuButton("Повторить", onClick = onRetry) }
+    } else if (!loading && empty) {
+        item("empty") { Text("Список пуст", color = Color.LightGray, fontSize = 12.sp) }
+    }
+}
+
 @Composable
 fun LoginScreen(mainViewModel: MainViewModel, playbackViewModel: PlaybackViewModel) {
-    val nav by mainViewModel.navigation.collectAsState()
-    val token by mainViewModel.token.collectAsState()
     val deviceCode by mainViewModel.deviceCode.collectAsState()
     val loading by mainViewModel.loading.collectAsState()
     val error by mainViewModel.error.collectAsState()
-    var manualToken by remember { mutableStateOf("") }
-    var showManualTokenInput by remember { mutableStateOf(false) }
-
-    // init() is called in MainActivity.onCreate — no need to re-init here
-
-    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            if (showManualTokenInput) {
-                Text("Введите токен", fontSize = 14.sp, color = Color.White)
-                Spacer(Modifier.height(8.dp))
-                TextField(
-                    value = manualToken,
-                    onValueChange = { manualToken = it },
-                    modifier = Modifier.fillMaxWidth(0.7f),
-                    placeholder = { Text("y0_...", fontSize = 11.sp) },
-                    singleLine = true
+    var manual by remember { mutableStateOf(false) }
+    var token by remember { mutableStateOf("") }
+    BackHandler(manual || deviceCode != null) {
+        manual = false
+        mainViewModel.cancelDeviceFlow()
+    }
+    RoundPage("Яндекс.Музыка") {
+        if (manual) {
+            item {
+                OutlinedTextField(
+                    token, { token = it }, Modifier.fillMaxWidth(),
+                    placeholder = { Text("OAuth-токен", fontSize = 11.sp) },
+                    visualTransformation = PasswordVisualTransformation(), singleLine = true
                 )
-                Spacer(Modifier.height(8.dp))
-                Button(onClick = {
-                    if (manualToken.isNotBlank()) {
-                        mainViewModel.saveToken(manualToken.trim())
-                        showManualTokenInput = false
-                    }
-                }) {
-                    Text("Войти", fontSize = 14.sp)
-                }
-                Spacer(Modifier.height(8.dp))
-                Button(onClick = { showManualTokenInput = false }) {
-                    Text("Отмена", fontSize = 12.sp)
-                }
-            } else if (deviceCode == null) {
-                Text("Вход в Яндекс.Музыку", fontSize = 14.sp, textAlign = TextAlign.Center, color = Color.White)
-                Spacer(Modifier.height(16.dp))
-                if (loading) {
-                    CircularProgressIndicator()
-                } else {
-                    Button(onClick = { mainViewModel.startDeviceFlow() }) {
-                        Text("Войти", fontSize = 14.sp)
-                    }
-                    Spacer(Modifier.height(12.dp))
-                    Button(onClick = { showManualTokenInput = true }) {
-                        Text("Вставить токен", fontSize = 12.sp)
-                    }
-                }
-            } else {
-                Text("Откройте:", fontSize = 12.sp, color = Color.Gray)
-                Text(deviceCode!!.verificationUrl, fontSize = 13.sp, color = Color(0xFFFFCC00))
-                Spacer(Modifier.height(8.dp))
-                Text("Код:", fontSize = 12.sp, color = Color.Gray)
-                Text(deviceCode!!.userCode, fontSize = 20.sp, color = Color(0xFFFFCC00))
-                Spacer(Modifier.height(12.dp))
-                CircularProgressIndicator(Modifier.size(24.dp))
-                Spacer(Modifier.height(8.dp))
-                Button(onClick = { mainViewModel.cancelDeviceFlow() }) {
-                    Text("Отмена", fontSize = 12.sp)
-                }
             }
-            if (error != null) {
-                Spacer(Modifier.height(8.dp))
-                Text(error!!.take(80), fontSize = 10.sp, color = Color(0xFFFF5252))
-            }
+            item { MenuButton("Войти") { if (token.isNotBlank()) mainViewModel.saveToken(token.trim()) } }
+            item { MenuButton("Отмена") { manual = false } }
+        } else if (deviceCode == null) {
+            item { MenuButton("Войти по коду") { mainViewModel.startDeviceFlow() } }
+            item { MenuButton("Вставить токен") { manual = true } }
+        } else {
+            item { Text("Откройте на телефоне:", color = Color.LightGray, fontSize = 11.sp) }
+            item { Text(deviceCode!!.verificationUrl, color = Accent, fontSize = 12.sp, textAlign = TextAlign.Center) }
+            item { Text(deviceCode!!.userCode, color = Accent, fontSize = 20.sp) }
+            item { Text("Ожидание подтверждения", color = Color.LightGray, fontSize = 10.sp) }
+            item { MenuButton("Отмена") { mainViewModel.cancelDeviceFlow() } }
         }
+        if (loading) item { CircularProgressIndicator(Modifier.size(24.dp), color = Accent) }
+        if (error != null) item { Text(error!!, color = Color(0xFFFF8080), fontSize = 11.sp) }
     }
 }
 
-// ---------- Home Content ----------
 @Composable
-fun HomeContent(
-    mainViewModel: MainViewModel,
-    playbackViewModel: PlaybackViewModel,
-    navScreen: String
+fun LikedScreenContent(main: MainViewModel, playback: PlaybackViewModel) {
+    val tracks by main.likedTracks.collectAsState()
+    val loading by main.loading.collectAsState()
+    val error by main.error.collectAsState()
+    val uid by main.uid.collectAsState()
+    LaunchedEffect(uid) { main.loadLikedTracks() }
+    TrackPage(
+        "Мне нравится · ${tracks.size}", tracks, loading, error,
+        { main.loadLikedTracks() }, { main.goBack() }
+    ) { index ->
+        playback.setQueue(tracks, index, uid ?: "")
+        main.navigate("player")
+    }
+}
+
+@Composable
+fun PlaylistsScreenContent(main: MainViewModel, playback: PlaybackViewModel) {
+    val playlists by main.playlists.collectAsState()
+    val loading by main.loading.collectAsState()
+    val error by main.error.collectAsState()
+    val uid by main.uid.collectAsState()
+    LaunchedEffect(uid) { main.loadPlaylists() }
+    PlaylistPage(playlists, loading, error, { main.loadPlaylists() }, { main.goBack() }) { playlist ->
+        main.navigate("playlist", playlist.kind, playlist.title, playlist.uid)
+    }
+}
+
+/** Separate presentation function is exercised by round-screen layout regression tests. */
+@Composable
+internal fun PlaylistPage(
+    playlists: List<ApiClient.Playlist>, loading: Boolean, error: String?,
+    onRetry: () -> Unit, onBack: () -> Unit, onSelect: (ApiClient.Playlist) -> Unit
 ) {
-    LaunchedEffect(Unit) {
-        mainViewModel.loadPlaylists()
+    RoundPage("Плейлисты") {
+        status(loading, error, playlists.isEmpty(), onRetry)
+        items(playlists, key = { "${it.uid}:${it.kind}" }) { playlist ->
+            MenuButton(playlist.title, "${playlist.trackCount} треков") { onSelect(playlist) }
+        }
+        item("refresh") { MenuButton("Обновить", onClick = onRetry) }
+        item("back") { MenuButton("Назад", onClick = onBack) }
     }
-    val playlists by mainViewModel.playlists.collectAsState()
-    val loading by mainViewModel.loading.collectAsState()
-    val uid by mainViewModel.uid.collectAsState()
+}
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(top = 50.dp, bottom = 40.dp, start = 20.dp, end = 20.dp)
-        ) {
-            Text("vplayer", fontSize = 16.sp, color = Color(0xFFFFCC00))
-            Spacer(Modifier.height(12.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                IconButton(onClick = { mainViewModel.navigate("liked") }) {
-                    Icon(Icons.Filled.Favorite, contentDescription = "Liked", tint = Color(0xFFFFCC00))
-                }
-                IconButton(onClick = { mainViewModel.navigate("playlists") }) {
-                    Icon(Icons.Filled.QueueMusic, contentDescription = "Playlists", tint = Color.White)
-                }
-                IconButton(onClick = { mainViewModel.navigate("search") }) {
-                    Icon(Icons.Filled.Search, contentDescription = "Search", tint = Color.White)
-                }
+@Composable
+fun PlaylistDetailScreenContent(main: MainViewModel, playback: PlaybackViewModel) {
+    val nav by main.navigation.collectAsState()
+    val uid by main.uid.collectAsState()
+    val owner = nav.playlistOwner ?: uid ?: ""
+    val kind = nav.playlist ?: ""
+    val allTracks by main.playlistTracks.collectAsState()
+    val tracks = allTracks["$owner:$kind"] ?: emptyList()
+    val loading by main.loading.collectAsState()
+    val error by main.error.collectAsState()
+    LaunchedEffect(owner, kind) { main.loadPlaylistTracks(kind, owner) }
+    TrackPage(
+        nav.playlistTitle, tracks, loading, error,
+        { main.loadPlaylistTracks(kind, owner) }, { main.goBack() }
+    ) { index ->
+        playback.setQueue(tracks, index, uid ?: "")
+        main.navigate("player")
+    }
+}
+
+@Composable
+private fun TrackPage(
+    title: String, tracks: List<ApiClient.Track>, loading: Boolean, error: String?,
+    onRetry: () -> Unit, onBack: () -> Unit, onSelect: (Int) -> Unit
+) {
+    RoundPage(title) {
+        status(loading, error, tracks.isEmpty(), onRetry)
+        items(tracks.size) { index ->
+            val track = tracks[index]
+            MenuButton(track.title.ifBlank { track.id }, track.artist) { onSelect(index) }
+        }
+        item("refresh") { MenuButton("Обновить", onClick = onRetry) }
+        item("back") { MenuButton("Назад", onClick = onBack) }
+    }
+}
+
+@Composable
+fun SearchScreenContent(main: MainViewModel, playback: PlaybackViewModel) {
+    var text by remember { mutableStateOf("") }
+    val results by main.searchResults.collectAsState()
+    val loading by main.loading.collectAsState()
+    val error by main.error.collectAsState()
+    val uid by main.uid.collectAsState()
+    RoundPage("Поиск") {
+        item {
+            OutlinedTextField(
+                text, { text = it }, Modifier.fillMaxWidth(),
+                placeholder = { Text("Название трека", fontSize = 11.sp) }, singleLine = true
+            )
+        }
+        item { MenuButton("Найти") { main.search(text) } }
+        status(loading, error, results.isEmpty() && text.isNotBlank(), { main.search(text) })
+        items(results.size) { index ->
+            val track = results[index]
+            MenuButton(track.title, track.artist) {
+                playback.setQueue(results, index, uid ?: "")
+                main.navigate("player")
             }
-            Spacer(Modifier.height(12.dp))
-            if (loading) {
-                CircularProgressIndicator(Modifier.size(24.dp))
-            } else {
-                LazyColumn(
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    item {
-                        Text("Мои плейлисты", fontSize = 12.sp, color = Color.Gray)
-                    }
-                    items(playlists) { pl ->
-                        PlaylistRowItem(
-                            title = pl.title,
-                            subtitle = "${pl.trackCount} треков",
-                            onClick = { mainViewModel.navigate("playlist", pl.kind, pl.title) }
-                        )
-                    }
-                    item {
-                        Text("Действия", fontSize = 12.sp, color = Color.Gray)
-                    }
-                    item {
-                        PlaylistRowItem(
-                            title = "Настройки",
-                            subtitle = "",
-                            onClick = { mainViewModel.navigate("settings") }
-                        )
-                    }
-                }
-            }
+        }
+        item { MenuButton("Назад") { main.goBack() } }
+    }
+}
+
+@Composable
+fun PlayerScreenContent(main: MainViewModel, playback: PlaybackViewModel) {
+    val state by playback.state.collectAsState()
+    when (val current = state) {
+        is PlaybackService.PlayerState.Ready -> PlayerPanel(
+            current, { playback.prev() }, { playback.togglePlayPause() }, { playback.next() },
+            { main.navigate("player-actions") }, { main.navigate("home") }
+        )
+        is PlaybackService.PlayerState.Loading -> RoundPage("Загрузка") {
+            item { Text(current.title, color = Color.White, fontSize = 13.sp, textAlign = TextAlign.Center) }
+            item { CircularProgressIndicator(Modifier.size(24.dp), color = Accent) }
+            item { MenuButton("Следующий") { playback.next() } }
+            item { MenuButton("Домой") { main.navigate("home") } }
+        }
+        is PlaybackService.PlayerState.Error -> RoundPage("Ошибка воспроизведения") {
+            item { Text(current.message, color = Color(0xFFFF8080), fontSize = 11.sp) }
+            item { MenuButton("Следующий") { playback.next() } }
+            item { MenuButton("Домой") { main.navigate("home") } }
+        }
+        PlaybackService.PlayerState.Idle -> RoundPage("Плеер") {
+            item { Text("Выберите трек", color = Color.LightGray, fontSize = 12.sp) }
+            item { MenuButton("Мне нравится") { main.navigate("liked") } }
+            item { MenuButton("Домой") { main.navigate("home") } }
         }
     }
 }
 
 @Composable
-fun PlaylistRowItem(title: String, subtitle: String, onClick: () -> Unit) {
-    Button(
-        onClick = onClick,
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(8.dp)
-    ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
-            Text(title, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (subtitle.isNotEmpty()) {
-                Text(subtitle, fontSize = 10.sp, color = Color.Gray, maxLines = 1)
-            }
-        }
-    }
-}
-
-// ---------- Liked ----------
-@Composable
-fun LikedScreenContent(mainViewModel: MainViewModel, playbackViewModel: PlaybackViewModel) {
-    LaunchedEffect(Unit) { mainViewModel.loadLikedTracks() }
-    val tracks by mainViewModel.likedTracks.collectAsState()
-    val loading by mainViewModel.loading.collectAsState()
-    val uid by mainViewModel.uid.collectAsState()
-
-    Box(modifier = Modifier.fillMaxSize()) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            // Header
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 46.dp, start = 20.dp, end = 20.dp),
-                horizontalArrangement = Arrangement.SpaceBetween
+internal fun PlayerPanel(
+    state: PlaybackService.PlayerState.Ready, onPrev: () -> Unit, onToggle: () -> Unit,
+    onNext: () -> Unit, onMore: () -> Unit, onHome: () -> Unit
+) {
+    BoxWithConstraints(Modifier.fillMaxSize().background(Color.Black), Alignment.Center) {
+        val diameter = minOf(maxWidth, maxHeight)
+        val scale = (diameter.value / 233f).coerceIn(0.85f, 2f)
+        val progress = if (state.durationMs > 0) state.positionMs.toFloat() / state.durationMs else 0f
+        // Ring is an overlay outside the inscribed safe square, not a 200dp column element.
+        CircularProgress(progress, Modifier.size(diameter * 0.93f).testTag("progress-ring"))
+        RoundScreen(background = Color.Transparent) {
+            Column(
+                Modifier.fillMaxSize(), verticalArrangement = Arrangement.SpaceEvenly,
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Text("Liked", fontSize = 14.sp, color = Color(0xFFFFCC00))
-                Text("${tracks.size}", fontSize = 12.sp, color = Color.Gray)
-            }
-            Spacer(Modifier.height(4.dp))
-            if (loading) {
-                Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator()
-                }
-            } else if (tracks.isEmpty()) {
-                Box(modifier = Modifier.fillMaxWidth().height(200.dp), contentAlignment = Alignment.Center) {
-                    Text("Пусто", fontSize = 14.sp, color = Color.Gray)
-                }
-            } else {
-                LazyColumn(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(2.dp),
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                        top = 50.dp, bottom = 50.dp, start = 25.dp, end = 25.dp
-                    )
-                ) {
-                    items(tracks.size) { idx ->
-                        val t = tracks[idx]
-                        TrackRowItem(
-                            title = t.title,
-                            artist = t.artist,
-                            liked = t.liked,
-                            onClick = {
-                                playbackViewModel.setQueue(tracks, idx, uid ?: "")
-                                mainViewModel.navigate("player")
-                            }
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun TrackRowItem(
-    title: String,
-    artist: String,
-    liked: Boolean,
-    onClick: () -> Unit
-) {
-    Button(
-        onClick = onClick,
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(6.dp)
-    ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    Icons.Filled.MusicNote,
-                    contentDescription = null,
-                    tint = Color(0xFFFFCC00),
-                    modifier = Modifier.size(16.dp)
-                )
-                Spacer(Modifier.width(8.dp))
                 Text(
-                    title,
-                    fontSize = 12.sp,
-                    color = Color.White,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
+                    state.title, color = Color.White, fontSize = 14.sp * scale, maxLines = 1,
+                    overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth()
                 )
-                Icon(
-                    if (liked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
-                    contentDescription = "Like",
-                    tint = if (liked) Color(0xFFFF5252) else Color.Gray,
-                    modifier = Modifier.size(16.dp)
+                Text(
+                    state.artist, color = Color.LightGray, fontSize = 11.sp * scale, maxLines = 1,
+                    overflow = TextOverflow.Ellipsis, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center
                 )
-            }
-            Text(artist, fontSize = 10.sp, color = Color.Gray, maxLines = 1)
-        }
-    }
-}
-
-// ---------- Playlists ----------
-@Composable
-fun PlaylistsScreenContent(mainViewModel: MainViewModel, playbackViewModel: PlaybackViewModel) {
-    LaunchedEffect(Unit) { mainViewModel.loadPlaylists() }
-    val playlists by mainViewModel.playlists.collectAsState()
-    val loading by mainViewModel.loading.collectAsState()
-
-    Box(modifier = Modifier.fillMaxSize()) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            Text(
-                "Playlists",
-                fontSize = 14.sp,
-                color = Color(0xFFFFCC00),
-                modifier = Modifier.padding(top = 46.dp, start = 20.dp)
-            )
-            Spacer(Modifier.height(8.dp))
-            if (loading) {
-                Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator()
-                }
-            } else {
-                LazyColumn(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                        top = 50.dp, bottom = 50.dp, start = 25.dp, end = 25.dp
+                Row(Modifier.fillMaxWidth(), Arrangement.SpaceEvenly, Alignment.CenterVertically) {
+                    PlayerButton(Icons.Default.SkipPrevious, "Предыдущий", "previous", onPrev, scale = scale)
+                    PlayerButton(
+                        if (state.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                        "Воспроизвести / пауза", "play-pause", onToggle, highlighted = true, scale = scale
                     )
-                ) {
-                    items(playlists) { pl ->
-                        PlaylistRowItem(
-                            title = pl.title,
-                            subtitle = "${pl.trackCount} треков",
-                            onClick = { mainViewModel.navigate("playlist", pl.kind, pl.title) }
-                        )
+                    PlayerButton(Icons.Default.SkipNext, "Следующий", "next", onNext, scale = scale)
+                }
+                Text(
+                    "${formatTime(state.positionMs)} / ${formatTime(state.durationMs)}",
+                    color = Color.LightGray, fontSize = 11.sp * scale
+                )
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                    TextButton(onHome, Modifier.height(32.dp * scale).testTag("home"), contentPadding = PaddingValues(0.dp)) {
+                        Text("Домой", fontSize = 11.sp * scale, color = Accent)
+                    }
+                    TextButton(onMore, Modifier.height(32.dp * scale).testTag("more"), contentPadding = PaddingValues(0.dp)) {
+                        Text("Ещё", fontSize = 11.sp * scale, color = Accent)
                     }
                 }
             }
@@ -410,327 +307,118 @@ fun PlaylistsScreenContent(mainViewModel: MainViewModel, playbackViewModel: Play
     }
 }
 
-// ---------- Playlist Detail ----------
 @Composable
-fun PlaylistDetailScreenContent(
-    mainViewModel: MainViewModel,
-    playbackViewModel: PlaybackViewModel,
-    playlistKind: String?,
-    playlistTitle: String
+private fun PlayerButton(
+    icon: ImageVector, label: String, tag: String, onClick: () -> Unit,
+    highlighted: Boolean = false, scale: Float = 1f
 ) {
-    val uid by mainViewModel.uid.collectAsState()
-    val loading by mainViewModel.loading.collectAsState()
-    val playlistTracks by mainViewModel.playlistTracks.collectAsState()
-    val tracks = playlistKind?.let { playlistTracks[it] } ?: emptyList()
-
-    LaunchedEffect(playlistKind) {
-        playlistKind?.let { mainViewModel.loadPlaylistTracks(it) }
+    IconButton(
+        onClick, Modifier.size(44.dp * scale).testTag(tag).background(
+            if (highlighted) Accent else Color(0xFF202020), CircleShape
+        )
+    ) {
+        Icon(icon, label, Modifier.size(26.dp * scale), tint = if (highlighted) Color.Black else Color.White)
     }
+}
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            Text(
-                playlistTitle,
-                fontSize = 14.sp,
-                color = Color(0xFFFFCC00),
-                modifier = Modifier.padding(top = 46.dp, start = 20.dp),
-                maxLines = 1
-            )
-            Spacer(Modifier.height(8.dp))
-            if (loading) {
-                Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator()
-                }
-            } else {
-                LazyColumn(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(2.dp),
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                        top = 50.dp, bottom = 50.dp, start = 25.dp, end = 25.dp
+@Composable
+private fun PlayerActions(main: MainViewModel, playback: PlaybackViewModel) {
+    val state by playback.state.collectAsState()
+    val queue by playback.queue.collectAsState()
+    val liked by playback.liked.collectAsState()
+    val shuffle by playback.shuffle.collectAsState()
+    val repeat by playback.repeat.collectAsState()
+    val volume by playback.volume.collectAsState()
+    val uid by main.uid.collectAsState()
+    val track = queue.items.getOrNull(queue.currentIndex)
+    RoundPage("Управление") {
+        if (state is PlaybackService.PlayerState.Ready) {
+            val ready = state as PlaybackService.PlayerState.Ready
+            item {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("Перемотка", color = Color.LightGray, fontSize = 12.sp)
+                    var fraction by remember(ready.title) { mutableStateOf<Float?>(null) }
+                    Slider(
+                        value = fraction ?: (ready.positionMs.toFloat() / ready.durationMs.coerceAtLeast(1)).coerceIn(0f, 1f),
+                        onValueChange = { fraction = it },
+                        onValueChangeFinished = {
+                            fraction?.let { playback.seekTo((it * ready.durationMs).toLong()) }
+                            fraction = null
+                        },
+                        modifier = Modifier.fillMaxWidth()
                     )
-                ) {
-                    items(tracks.size) { idx ->
-                        val t = tracks[idx]
-                        TrackRowItem(
-                            title = t.title,
-                            artist = t.artist,
-                            liked = t.liked,
-                            onClick = {
-                                playbackViewModel.setQueue(tracks, idx, uid ?: "")
-                                mainViewModel.navigate("player")
-                            }
-                        )
-                    }
                 }
             }
+        }
+        if (track != null && uid != null) item {
+            MenuButton(if (liked) "Убрать лайк" else "Мне нравится") { playback.toggleLike(track.trackId, uid!!) }
+        }
+        item { MenuButton("Очередь") { main.navigate("queue") } }
+        item { MenuButton(if (shuffle) "Перемешать: вкл." else "Перемешать: выкл.") { playback.setShuffle(!shuffle) } }
+        item {
+            MenuButton("Повтор: " + when (repeat) {
+                PlaybackService.RepeatMode.OFF -> "выкл."
+                PlaybackService.RepeatMode.ALL -> "все"
+                PlaybackService.RepeatMode.ONE -> "один"
+            }) {
+                playback.setRepeatMode(when (repeat) {
+                    PlaybackService.RepeatMode.OFF -> PlaybackService.RepeatMode.ALL
+                    PlaybackService.RepeatMode.ALL -> PlaybackService.RepeatMode.ONE
+                    PlaybackService.RepeatMode.ONE -> PlaybackService.RepeatMode.OFF
+                })
+            }
+        }
+        item { VolumeControl(volume, { playback.setVolume(it) }) }
+        item { MenuButton("Назад к плееру") { main.navigate("player") } }
+    }
+}
+
+@Composable
+fun QueueScreenContent(main: MainViewModel, playback: PlaybackViewModel) {
+    val queue by playback.queue.collectAsState()
+    RoundPage("Очередь") {
+        items(queue.items.size) { index ->
+            val track = queue.items[index]
+            MenuButton((if (index == queue.currentIndex) "▶ " else "") + track.title, track.artist) {
+                playback.playIndex(index)
+                main.navigate("player")
+            }
+        }
+        item { MenuButton("Назад") { main.navigate("player") } }
+    }
+}
+
+@Composable
+private fun VolumeControl(volume: Float, onChange: (Float) -> Unit) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text("Громкость ${(volume * 100).toInt()}%", color = Color.LightGray, fontSize = 12.sp)
+        Row {
+            IconButton({ onChange((volume - 0.1f).coerceAtLeast(0f)) }) { Text("−", color = Accent, fontSize = 22.sp) }
+            IconButton({ onChange((volume + 0.1f).coerceAtMost(1f)) }) { Text("+", color = Accent, fontSize = 22.sp) }
         }
     }
 }
 
-// ---------- Search ----------
 @Composable
-fun SearchScreenContent(mainViewModel: MainViewModel, playbackViewModel: PlaybackViewModel) {
-    var searchText by remember { mutableStateOf("") }
-    val results by mainViewModel.searchResults.collectAsState()
-    val loading by mainViewModel.loading.collectAsState()
-    val uid by mainViewModel.uid.collectAsState()
-
-    Box(modifier = Modifier.fillMaxSize()) {
-        Column(modifier = Modifier.fillMaxSize()) {
+fun SettingsScreenContent(main: MainViewModel, playback: PlaybackViewModel) {
+    val volume by playback.volume.collectAsState()
+    val config = LocalConfiguration.current
+    val density = LocalDensity.current.density
+    RoundPage("Настройки") {
+        item { VolumeControl(volume, { playback.setVolume(it) }) }
+        item {
             Text(
-                "Search",
-                fontSize = 14.sp,
-                color = Color(0xFFFFCC00),
-                modifier = Modifier.padding(top = 46.dp, start = 20.dp)
+                "v0.2.1\n${config.screenWidthDp} × ${config.screenHeightDp} dp\n" +
+                    "Плотность ${"%.2f".format(density)}",
+                color = Color.Gray, fontSize = 10.sp, textAlign = TextAlign.Center
             )
-            Spacer(Modifier.height(4.dp))
-            TextField(
-                value = searchText,
-                onValueChange = {
-                    searchText = it
-                    mainViewModel.search(it)
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = 20.dp, end = 20.dp),
-                placeholder = { Text("Название трека...", fontSize = 12.sp) },
-                singleLine = true
-            )
-            Spacer(Modifier.height(8.dp))
-            if (loading) {
-                Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator()
-                }
-            } else {
-                LazyColumn(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(2.dp),
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                        top = 50.dp, bottom = 50.dp, start = 25.dp, end = 25.dp
-                    )
-                ) {
-                    items(results.size) { idx ->
-                        val t = results[idx]
-                        TrackRowItem(
-                            title = t.title,
-                            artist = t.artist,
-                            liked = t.liked,
-                            onClick = {
-                                playbackViewModel.setQueue(results, idx, uid ?: "")
-                                mainViewModel.navigate("player")
-                            }
-                        )
-                    }
-                }
-            }
         }
-    }
-}
-
-// ---------- Player ----------
-@Composable
-fun PlayerScreenContent(mainViewModel: MainViewModel, playbackViewModel: PlaybackViewModel) {
-    val state by playbackViewModel.state.collectAsState()
-    val shuffle by playbackViewModel.shuffle.collectAsState()
-    val repeat by playbackViewModel.repeat.collectAsState()
-    val liked by playbackViewModel.liked.collectAsState()
-    val uid by mainViewModel.uid.collectAsState()
-    val queue by playbackViewModel.queue.collectAsState()
-
-
-    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        when (val s = state) {
-            is PlaybackService.PlayerState.Idle -> {
-                Text("Ожидание", fontSize = 14.sp, color = Color.Gray)
-            }
-            is PlaybackService.PlayerState.Loading -> {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(s.title, fontSize = 14.sp, color = Color.White, maxLines = 1)
-                    Text(s.artist, fontSize = 10.sp, color = Color.Gray, maxLines = 1)
-                    Spacer(Modifier.height(12.dp))
-                    CircularProgressIndicator()
-                }
-            }
-            is PlaybackService.PlayerState.Ready -> {
-                val uidLocal = uid
-                val queueLocal = queue
-                val currentTrackId = queueLocal.items.getOrNull(queueLocal.currentIndex)?.trackId
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(s.title, fontSize = 14.sp, color = Color.White, maxLines = 1)
-                    Text(s.artist, fontSize = 10.sp, color = Color.Gray, maxLines = 1)
-                    Spacer(Modifier.height(12.dp))
-                    // Progress ring
-                    Box(contentAlignment = Alignment.Center) {
-                        val progress = if (s.durationMs > 0) s.positionMs.toFloat() / s.durationMs else 0f
-                        CircularProgressInd(progress = progress)
-                        Icon(
-                            Icons.Filled.MusicNote,
-                            contentDescription = null,
-                            tint = Color(0xFFFFCC00),
-                            modifier = Modifier.size(48.dp)
-                        )
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        "${formatTime(s.positionMs)} / ${formatTime(s.durationMs)}",
-                        fontSize = 11.sp,
-                        color = Color.Gray
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    // Seek slider
-                    if (s.durationMs > 0) {
-                        Slider(
-                            value = s.positionMs.toFloat() / s.durationMs.toFloat(),
-                            onValueChange = { fraction ->
-                                playbackViewModel.seekTo((fraction * s.durationMs).toLong())
-                            },
-                            modifier = Modifier.fillMaxWidth(0.7f),
-                            colors = SliderDefaults.colors(
-                                thumbColor = Color(0xFFFFCC00),
-                                activeTrackColor = Color(0xFFFFCC00),
-                                inactiveTrackColor = Color(0x33FFFFFF)
-                            )
-                        )
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    // Like / dislike / queue row
-                    if (uidLocal != null && currentTrackId != null) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            IconButton(onClick = {
-                                playbackViewModel.toggleLike(currentTrackId, uidLocal)
-                            }) {
-                                Icon(
-                                    if (liked) Icons.Filled.Favorite else Icons.Filled.FavoriteBorder,
-                                    "like",
-                                    tint = if (liked) Color(0xFFFF5252) else Color.Gray
-                                )
-                            }
-                            IconButton(onClick = { mainViewModel.navigate("queue") }) {
-                                Icon(Icons.Filled.QueueMusic, "queue", tint = Color.White)
-                            }
-                        }
-                        Spacer(Modifier.height(8.dp))
-                    }
-                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        IconButton(onClick = { playbackViewModel.prev() }) {
-                            Icon(Icons.Filled.SkipPrevious, "prev", tint = Color.White)
-                        }
-                        IconButton(onClick = { playbackViewModel.togglePlayPause() }) {
-                            Icon(
-                                if (s.isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                                "play/pause",
-                                tint = Color(0xFFFFCC00),
-                                modifier = Modifier.size(32.dp)
-                            )
-                        }
-                        IconButton(onClick = { playbackViewModel.next() }) {
-                            Icon(Icons.Filled.SkipNext, "next", tint = Color.White)
-                        }
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        IconButton(onClick = { playbackViewModel.setShuffle(!shuffle) }) {
-                            Icon(
-                                Icons.Filled.Shuffle, "shuffle",
-                                tint = if (shuffle) Color(0xFFFFCC00) else Color.Gray
-                            )
-                        }
-                        IconButton(onClick = { playbackViewModel.setRepeatMode(
-                            if (repeat == PlaybackService.RepeatMode.OFF) PlaybackService.RepeatMode.ALL
-                            else if (repeat == PlaybackService.RepeatMode.ALL) PlaybackService.RepeatMode.ONE
-                            else PlaybackService.RepeatMode.OFF
-                        ) }) {
-                            Icon(
-                                Icons.Filled.Repeat, "repeat",
-                                tint = if (repeat != PlaybackService.RepeatMode.OFF) Color(0xFFFFCC00) else Color.Gray
-                            )
-                        }
-                    }
-                }
-            }
-            is PlaybackService.PlayerState.Error -> {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(s.message, fontSize = 12.sp, color = Color(0xFFFF5252))
-                    Spacer(Modifier.height(8.dp))
-                    Button(onClick = { mainViewModel.goBack() }) { Text("Назад", fontSize = 12.sp) }
-                }
-            }
-        }
+        item { MenuButton("Выйти из аккаунта") { playback.stop(); main.logout() } }
+        item { MenuButton("Назад") { main.goBack() } }
     }
 }
 
 fun formatTime(ms: Long): String {
-    val totalSec = ms / 1000
-    val min = totalSec / 60
-    val sec = totalSec % 60
-    return "%d:%02d".format(min, sec)
-}
-
-@Composable
-fun CircularProgressInd(progress: Float) {
-    com.victormuha.vplayer.ui.components.CircularProgress(progress = progress)
-}
-
-// ---------- Queue ----------
-@Composable
-fun QueueScreenContent(mainViewModel: MainViewModel, playbackViewModel: PlaybackViewModel) {
-    val queue by playbackViewModel.queue.collectAsState()
-
-    Box(modifier = Modifier.fillMaxSize()) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            Text(
-                "Queue",
-                fontSize = 14.sp,
-                color = Color(0xFFFFCC00),
-                modifier = Modifier.padding(top = 46.dp, start = 20.dp)
-            )
-            Spacer(Modifier.height(8.dp))
-            LazyColumn(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(2.dp),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                    top = 50.dp, bottom = 50.dp, start = 25.dp, end = 25.dp
-                )
-            ) {
-                items(queue.items.size) { idx ->
-                    val t = queue.items[idx]
-                    TrackRowItem(
-                        title = t.title,
-                        artist = t.artist,
-                        liked = false,
-                        onClick = {
-                            playbackViewModel.playIndex(idx)
-                            mainViewModel.navigate("player")
-                        }
-                    )
-                }
-            }
-        }
-    }
-}
-
-// ---------- Settings ----------
-@Composable
-fun SettingsScreenContent(mainViewModel: MainViewModel, playbackViewModel: PlaybackViewModel) {
-    val volume by playbackViewModel.volume.collectAsState()
-
-    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("Настройки", fontSize = 14.sp, color = Color(0xFFFFCC00))
-            Spacer(Modifier.height(16.dp))
-            Text("Volume: ${"%.0f".format(volume * 100)}%", fontSize = 12.sp)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = { playbackViewModel.setVolume((volume - 0.1f).coerceAtLeast(0f)) }) {
-                    Text("-", fontSize = 16.sp)
-                }
-                Button(onClick = { playbackViewModel.setVolume((volume + 0.1f).coerceAtMost(1f)) }) {
-                    Text("+", fontSize = 16.sp)
-                }
-            }
-            Spacer(Modifier.height(24.dp))
-            Button(onClick = { playbackViewModel.stop(); mainViewModel.logout() }) {
-                Text("Выйти", fontSize = 12.sp)
-            }
-        }
-    }
+    val seconds = ms.coerceAtLeast(0) / 1000
+    return "%d:%02d".format(seconds / 60, seconds % 60)
 }

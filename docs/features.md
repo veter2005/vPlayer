@@ -1,6 +1,8 @@
 # vPlayer — Матрица функций для версии 0.2.0
 
-Функциональность API взята из [MarshalX yandex-music-api](https://github.com/MarshalX/yandex-music-api) (реализация полной обёртки Яндекс.Музыки). Приложение Cassette использует ту же библиотеку через `libtape`.
+Функциональность API сверяется с [MarshalX yandex-music-api](https://github.com/MarshalX/yandex-music-api).
+Список ниже является планом v0.2.0, а не подтверждением проверки всех функций на часах.
+В v0.2.1 исправлены список плейлистов и интерфейс; медиадвижок не переработан.
 
 ## Приоритет 1 — Обязательные для MVP+ (v0.2.0)
 
@@ -9,7 +11,7 @@
 | Авторизация | OAuth Device Flow | QR-ссылка + код на экране часов | `pollDeviceToken` pending/expired/cancel | — |
 | Выход из аккаунта | очистить токен | Кнопка в настройках | `logout()` | — |
 | Список Liked | `GET /users/{uid}/likes/tracks` | Экран Liked с прокруткой | `likedTracks(uid)` | Требует Плюс для полного потока |
-| Пользовательские плейлисты | `GET /users/{uid}/playlists` | Экран списка плейлистов | `playlistsList()` | — |
+| Пользовательские плейлисты | `GET /users/{uid}/playlists/list` | Экран списка плейлистов | `playlistsList()` | Исправлено в v0.2.1 |
 | Содержимое плейлиста | `GET /users/{uid}/playlists/{kind}` | Экран треков плейлиста | `playlistTracks()` | — |
 | Поиск (трек) | `GET /search?text=...&type=track` | Текстовый поиск через BT-клавиатуру | `search(text, "track")` | — |
 | Поиск (плейлист) | `GET /search?text=...&type=playlist` | Тот же экран, tabs | `search(text, "playlist")` | — |

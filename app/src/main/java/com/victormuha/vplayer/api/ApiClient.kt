@@ -20,7 +20,7 @@ import java.util.concurrent.TimeUnit
 object ApiClient {
     private const val TAG = "ApiClient"
     private const val OAUTH_BASE = "https://oauth.yandex.ru"
-    private const val API_BASE = "https://api.music.yandex.net"
+    internal var API_BASE = "https://api.music.yandex.net"
     private const val CLIENT_ID = "23cabbbdc6cd418abb4b39c32c41195d"
     private const val CLIENT_SECRET = "53bc75238f0c4d08a118e51fe9203300"
     private const val SIGN_SALT = "XGRlBW9FXlekgbPrRHuSiA"
@@ -162,41 +162,30 @@ object ApiClient {
 
     // ---------- Playlists ----------
     fun playlistsList(uid: String, onResult: (List<Playlist>?, String?) -> Unit) {
-        get("$API_BASE/users/$uid/playlists") { resp, err ->
+        if (uid.isBlank()) return onResult(null, "Не указан владелец плейлистов")
+        get("$API_BASE/users/$uid/playlists/list") { resp, err ->
             if (err != null) return@get onResult(null, err)
-            val json = JSONObject(resp)
-            val arr = json.optJSONArray("result") ?: JSONArray()
-            val list = (0 until arr.length()).mapNotNull {
-                val p = arr.optJSONObject(it) ?: return@mapNotNull null
-                Playlist(
-                    kind = p.optString("kind"),
-                    title = p.optString("title", "Без названия"),
-                    trackCount = p.optInt("trackCount"),
-                    uid = p.optString("uid")
-                )
-            }
-            onResult(list, null)
+            val parsed = runCatching { PlaylistResponses.list(resp, uid) }
+            parsed.fold(
+                onSuccess = { onResult(it, null) },
+                onFailure = { onResult(null, "Некорректный ответ списка плейлистов") }
+            )
         }
     }
 
     fun playlistTracks(uid: String, kind: String, onResult: (List<Track>?, String?) -> Unit) {
+        if (uid.isBlank() || kind.isBlank()) {
+            return onResult(null, "Не указан владелец или номер плейлиста")
+        }
         get("$API_BASE/users/$uid/playlists/$kind") { resp, err ->
             if (err != null) return@get onResult(null, err)
-            val json = JSONObject(resp)
-            val tracksArr = json.optJSONObject("result")?.optJSONArray("tracks") ?: JSONArray()
-            val ids = (0 until tracksArr.length()).mapNotNull {
-                val t = tracksArr.optJSONObject(it) ?: return@mapNotNull null
-                val trackObj = t.optJSONObject("track") ?: return@mapNotNull null
-                Track(
-                    id = trackObj.optString("id"),
-                    albumId = trackObj.optString("albumId"),
-                    title = "",
-                    artist = "",
-                    durationMs = trackObj.optLong("durationMs"),
-                    liked = trackObj.optBoolean("liked", false)
-                )
-            }.filter { it.id.isNotEmpty() }
-            resolveTrackMetadata(ids) { fullList, mErr ->
+            val parsed = runCatching { PlaylistResponses.tracks(resp) }
+            val tracks = parsed.getOrElse {
+                return@get onResult(null, "Некорректный ответ содержимого плейлиста")
+            }
+            // Full track objects already contain metadata. Resolve only short/unexpanded entries.
+            if (tracks.all { it.title.isNotBlank() }) return@get onResult(tracks, null)
+            resolveTrackMetadata(tracks) { fullList, mErr ->
                 onResult(fullList, mErr)
             }
         }
@@ -396,11 +385,16 @@ object ApiClient {
             override fun onResponse(call: Call, response: Response) {
                 val body = response.body?.string() ?: ""
                 if (!response.isSuccessful) {
+                    // No Authorization header, OAuth token or full response body in logs.
+                    val requestId = runCatching {
+                        JSONObject(body).optJSONObject("invocationInfo")?.optString("req-id")
+                    }.getOrNull().orEmpty().take(120)
+                    Log.w(TAG, "GET ${response.request.url.encodedPath}: HTTP ${response.code}; req-id=$requestId")
                     val err = when (response.code) {
                         401 -> "unauthorized"
                         403 -> "forbidden"
                         451 -> "legal unavailable"
-                        else -> "http ${response.code}"
+                        else -> "HTTP ${response.code}"
                     }
                     onDone(body, err)
                 } else {
@@ -430,6 +424,9 @@ object ApiClient {
             override fun onFailure(call: Call, e: IOException) { onDone("", e.message ?: "network") }
             override fun onResponse(call: Call, response: Response) {
                 val respBody = response.body?.string() ?: ""
+                if (!response.isSuccessful && url.startsWith(API_BASE)) {
+                    Log.w(TAG, "POST ${response.request.url.encodedPath}: HTTP ${response.code}")
+                }
                 onDone(respBody, if (!response.isSuccessful) "http ${response.code}" else null)
             }
         })
